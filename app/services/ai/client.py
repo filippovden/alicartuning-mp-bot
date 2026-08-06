@@ -97,6 +97,15 @@ class AIContentService:
         text = await self._complete(self._system(), prompt, max_tokens=150)
         return [kw.strip().strip('"') for kw in text.split(",") if kw.strip()]
 
+    async def generate_review_reply(self, product_title: str, rating: int, review_text: str) -> str:
+        prompt = prompts.REVIEW_REPLY_PROMPT.format(
+            brand=settings.brand_name,
+            product_title=product_title or settings.brand_name,
+            rating=rating,
+            review_text=review_text,
+        )
+        return await self._complete(self._system(), prompt, max_tokens=300)
+
     async def generate_full_content(self, draft: ProductDraft) -> dict[str, str | list[str]]:
         title = await self.generate_title(draft)
         description = await self.generate_description(title, draft)

@@ -5,6 +5,8 @@ class NewProductStates(StatesGroup):
     """Диалог создания товара /new (раздел 8 ТЗ)."""
 
     category = State()
+    category_pick_wb = State()
+    category_pick_ozon = State()
     title = State()
     brand = State()
     vendor_code = State()
@@ -24,3 +26,7 @@ class NewProductStates(StatesGroup):
 class EditProductStates(StatesGroup):
     choosing_field = State()
     entering_value = State()
+
+
+class ReviewReplyStates(StatesGroup):
+    entering_reply = State()

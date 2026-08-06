@@ -31,7 +31,7 @@ from app.services.validation import ValidationResult, validate_product
 PRODUCT_LOAD_OPTIONS = (
     selectinload(Product.category).selectinload(Category.attrs),
     selectinload(Product.attributes).selectinload(Attribute.category_attr),
-    selectinload(Product.images),
+    selectinload(Product.images).selectinload(Image.storage_file),
     selectinload(Product.variants),
 )
 
@@ -189,6 +189,58 @@ class ProductService:
         await self.session.commit()
         await self.session.refresh(image)
         return image
+
+    # --- Обработка изображений (раздел 11 ТЗ, V2) -------------------------
+
+    async def process_product_images(self, product_id: int) -> list[Image]:
+        """Прогоняет все фото товара (image_type=main) через удаление фона и
+        приведение к фирменному шаблону, сохраняя результат как новые файлы."""
+        from pathlib import Path
+
+        from app.services import image_pipeline
+        from app.services.storage import save_bytes
+
+        product = await self.get_product(product_id)
+        if product is None:
+            raise ValueError(f"Товар {product_id} не найден")
+
+        processed: list[Image] = []
+        for image in [img for img in product.images if img.image_type == "main"]:
+            source_path = Path(image.storage_file.path)
+            if not source_path.exists():
+                continue
+            processed_bytes = image_pipeline.process_product_photo(source_path.read_bytes())
+            storage_file = await save_bytes(self.session, processed_bytes, filename="processed.jpg", content_type="image/jpeg")
+            new_image = await self.add_image(product_id, storage_file.id, image_type="main", position=image.position)
+            processed.append(new_image)
+        return processed
+
+    async def generate_infographic_images(self, product_id: int, count: int = 1) -> list[Image]:
+        """Генерирует инфографику преимуществ на основе AI-буллетов (раздел 11, 12 ТЗ)."""
+        from app.services import image_pipeline
+        from app.services.storage import save_bytes
+
+        product = await self.get_product(product_id)
+        if product is None:
+            raise ValueError(f"Товар {product_id} не найден")
+
+        draft = ProductDraft(
+            category=product.category.name if product.category else "",
+            draft_title=product.title or "",
+            car_model=product.car_model or "",
+            color=product.color or "",
+            material=product.material or "",
+            package_contents=product.package_contents or "",
+        )
+        bullets = await self.ai_service.generate_bullets(product.title or "", draft)
+
+        created: list[Image] = []
+        for i in range(count):
+            infographic_bytes = image_pipeline.generate_infographic(bullets, title=product.brand)
+            storage_file = await save_bytes(self.session, infographic_bytes, filename="infographic.png", content_type="image/png")
+            image = await self.add_image(product_id, storage_file.id, image_type="infographic", position=100 + i)
+            created.append(image)
+        return created
 
     # --- AI-контент ---------------------------------------------------
 

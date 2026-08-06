@@ -9,8 +9,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import confirm_publish_kb, photos_done_kb, skip_kb
+from app.bot.keyboards import category_match_kb, confirm_publish_kb, photos_done_kb, skip_kb
 from app.bot.states import NewProductStates
+from app.services.category_search import (
+    ozon_cache_is_empty,
+    search_ozon_categories,
+    search_wb_categories,
+)
 from app.services.marketplaces.base import MarketplaceAPIError
 from app.services.storage import save_bytes
 
@@ -43,11 +48,106 @@ async def cmd_new(message: Message, state: FSMContext, product_service) -> None:
 @router.message(NewProductStates.category)
 async def step_category(message: Message, state: FSMContext, product_service) -> None:
     category_name = message.text.strip()
-    category = await product_service.get_or_fetch_category(
-        name=category_name, wb_subject_id=None, ozon_category_id=None, ozon_type_id=None
+    await state.update_data(category_name=category_name)
+
+    try:
+        wb_matches = await search_wb_categories(category_name, limit=8)
+    except MarketplaceAPIError as exc:
+        logger.warning("Поиск категорий WB не удался: %s", exc)
+        wb_matches = []
+
+    await state.update_data(
+        wb_matches=[{"subject_id": m.subject_id, "name": m.name} for m in wb_matches]
     )
+    await state.set_state(NewProductStates.category_pick_wb)
+
+    if wb_matches:
+        labels = [m.name for m in wb_matches]
+        await message.answer(
+            "Нашёл подходящие категории на <b>Wildberries</b>, выберите нужную:",
+            reply_markup=category_match_kb("wbcat", labels),
+        )
+    else:
+        await message.answer(
+            "Не нашёл точного совпадения на Wildberries по этому названию — можно "
+            "пропустить и указать характеристики вручную позже.",
+            reply_markup=category_match_kb("wbcat", []),
+        )
+
+
+@router.callback_query(F.data.startswith("wbcat:"), NewProductStates.category_pick_wb)
+async def pick_wb_category(callback: CallbackQuery, state: FSMContext, product_service, session) -> None:
+    choice = callback.data.split(":", 1)[1]
     data = await state.get_data()
+
+    if choice == "manual":
+        await state.update_data(wb_subject_id=None, wb_category_name=None)
+    else:
+        match = data["wb_matches"][int(choice)]
+        await state.update_data(wb_subject_id=match["subject_id"], wb_category_name=match["name"])
+
+    await callback.answer()
+
+    if await ozon_cache_is_empty(session):
+        await state.update_data(ozon_matches=[])
+        await callback.message.answer(
+            "Справочник категорий Ozon ещё не синхронизирован администратором "
+            "(команда /synccategories) — пропускаю подбор Ozon-категории, "
+            "её можно будет указать позже через /edit.",
+        )
+        await _finish_category_pick(callback.message, state, product_service, None, None)
+        return
+
+    ozon_matches = await search_ozon_categories(session, data["category_name"], limit=8)
+    await state.update_data(
+        ozon_matches=[
+            {"category_id": m.category_id, "type_id": m.type_id, "full_name": m.full_name} for m in ozon_matches
+        ]
+    )
+    await state.set_state(NewProductStates.category_pick_ozon)
+
+    if ozon_matches:
+        labels = [m.full_name for m in ozon_matches]
+        await callback.message.answer(
+            "Теперь найдите категорию на <b>Ozon</b>:", reply_markup=category_match_kb("ozcat", labels)
+        )
+    else:
+        await callback.message.answer(
+            "На Ozon точных совпадений не нашлось — можно пропустить.",
+            reply_markup=category_match_kb("ozcat", []),
+        )
+
+
+@router.callback_query(F.data.startswith("ozcat:"), NewProductStates.category_pick_ozon)
+async def pick_ozon_category(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    choice = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+
+    ozon_category_id = ozon_type_id = None
+    if choice != "manual":
+        match = data["ozon_matches"][int(choice)]
+        ozon_category_id, ozon_type_id = match["category_id"], match["type_id"]
+
+    await callback.answer()
+    await _finish_category_pick(callback.message, state, product_service, ozon_category_id, ozon_type_id)
+
+
+async def _finish_category_pick(
+    message: Message,
+    state: FSMContext,
+    product_service,
+    ozon_category_id: int | None,
+    ozon_type_id: int | None,
+) -> None:
+    data = await state.get_data()
+    category = await product_service.get_or_fetch_category(
+        name=data.get("wb_category_name") or data["category_name"],
+        wb_subject_id=data.get("wb_subject_id"),
+        ozon_category_id=ozon_category_id,
+        ozon_type_id=ozon_type_id,
+    )
     await product_service.update_fields(data["product_id"], category_id=category.id)
+
     await state.set_state(NewProductStates.title)
     await message.answer(texts.ASK_TITLE)
 
@@ -239,6 +339,27 @@ async def step_dynamic_attribute(message: Message, state: FSMContext, product_se
     remaining = pending[1:]
     await state.update_data(pending_attrs=remaining)
     await _ask_next_attribute_or_generate(message, state, product_service)
+
+
+@router.callback_query(F.data.startswith("processimg:"))
+async def process_images(callback: CallbackQuery, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer("Обрабатываю фото...")
+    await callback.message.answer("⏳ Убираю фон и привожу фото к единому шаблону...")
+    processed = await product_service.process_product_images(product_id)
+    if processed:
+        await callback.message.answer(f"✅ Обработано фото: {len(processed)}. Новые версии добавлены к товару.")
+    else:
+        await callback.message.answer("⚠️ Не нашёл исходных фото для обработки.")
+
+
+@router.callback_query(F.data.startswith("gengraphic:"))
+async def generate_graphic(callback: CallbackQuery, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer("Генерирую инфографику...")
+    await callback.message.answer("🎨 Генерирую инфографику преимуществ...")
+    images = await product_service.generate_infographic_images(product_id)
+    await callback.message.answer(f"✅ Готово: {len(images)} изображение(й) добавлено к товару.")
 
 
 @router.callback_query(F.data.startswith("publish:"))

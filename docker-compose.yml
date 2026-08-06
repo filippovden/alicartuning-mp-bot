@@ -54,5 +54,13 @@ services:
       - ./storage:/app/storage
     command: celery -A app.worker.celery_app worker --loglevel=INFO
 
+  beat:
+    build: .
+    env_file: .env
+    depends_on:
+      - redis
+      - postgres
+    command: celery -A app.worker.celery_app beat --loglevel=INFO
+
 volumes:
   pgdata:

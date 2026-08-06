@@ -5,6 +5,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🚀 Опубликовать на WB и Ozon", callback_data=f"publish:{product_id}")
+    builder.button(text="🖼 Обработать фото (убрать фон)", callback_data=f"processimg:{product_id}")
+    builder.button(text="🎨 Сгенерировать инфографику", callback_data=f"gengraphic:{product_id}")
+    builder.button(text="🔍 Анализ конкурентов", callback_data=f"competitors:{product_id}")
     builder.button(text="✏️ Редактировать", callback_data=f"edit:{product_id}")
     builder.button(text="🗑 Отмена", callback_data=f"cancel:{product_id}")
     builder.adjust(1)
@@ -37,5 +40,24 @@ def products_list_kb(products: list[tuple[int, str]]) -> InlineKeyboardMarkup:
 def skip_kb(field: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Пропустить", callback_data=f"skip:{field}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def category_match_kb(prefix: str, labels: list[str]) -> InlineKeyboardMarkup:
+    """Кнопки выбора найденной категории по индексу + запасной вариант «не найдено»."""
+    builder = InlineKeyboardBuilder()
+    for idx, label in enumerate(labels):
+        text = label if len(label) <= 60 else label[:57] + "…"
+        builder.button(text=text, callback_data=f"{prefix}:{idx}")
+    builder.button(text="🚫 Ничего не подходит / пропустить", callback_data=f"{prefix}:manual")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def reviews_reply_kb(review_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🤖 Ответить автоматически", callback_data=f"review_auto:{review_id}")
+    builder.button(text="✍️ Ответить вручную", callback_data=f"review_manual:{review_id}")
     builder.adjust(1)
     return builder.as_markup()

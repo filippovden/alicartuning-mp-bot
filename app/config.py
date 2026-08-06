@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     # Wildberries
     wb_api_key: str = ""
     wb_api_base_url: str = "https://content-api.wildberries.ru"
+    wb_stats_api_base_url: str = "https://statistics-api.wildberries.ru"
+    wb_feedbacks_api_base_url: str = "https://feedbacks-api.wildberries.ru"
 
     # Ozon
     ozon_client_id: str = ""

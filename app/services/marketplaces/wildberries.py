@@ -36,6 +36,18 @@ class WildberriesClient(BaseMarketplaceClient):
         data = response.json().get("data", [])
         return [CategoryNode(id=item["id"], name=item["name"]) for item in data]
 
+    async def search_categories(self, name: str, limit: int = 20) -> list[CategoryNode]:
+        """GET /content/v2/object/all?name={name} — поиск категорий (subjectID) по названию.
+
+        Используется для сопоставления внутренней категории товара с WB subjectID
+        без ручного перебора дерева (см. «Admin-инструмент сопоставления категорий»).
+        """
+        response = await self._request(
+            "GET", "/content/v2/object/all", params={"name": name, "limit": limit}
+        )
+        data = response.json().get("data", [])
+        return [CategoryNode(id=item["subjectID"], name=item["subjectName"]) for item in data]
+
     async def get_subcategories(self, parent_id: int, limit: int = 1000) -> list[CategoryNode]:
         """GET /content/v2/object/all?parentID={ID} — подкатегории (до 1000 за раз)."""
         response = await self._request(

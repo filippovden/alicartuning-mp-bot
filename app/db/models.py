@@ -250,3 +250,49 @@ class BotDialog(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="dialogs")
+
+
+# --- OZON CATEGORY CACHE ------------------------------------------------------
+# Ozon не отдаёт поиск категорий по имени, поэтому дерево категорий (POST
+# /v2/category/tree) кэшируется в БД и обновляется по команде администратора
+# либо периодической Celery-задачей (см. раздел «Admin-инструмент категорий»).
+
+
+class OzonCategoryNode(Base):
+    __tablename__ = "ozon_category_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    category_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    type_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    parent_category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    name: Mapped[str] = mapped_column(String(500), nullable=False)
+    is_leaf: Mapped[bool] = mapped_column(Boolean, default=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# --- REVIEWS (раздел 4, V3 ТЗ — работа с отзывами) ----------------------------
+
+
+class ReviewSentiment(str, enum.Enum):
+    POSITIVE = "positive"
+    NEUTRAL = "neutral"
+    NEGATIVE = "negative"
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+    __table_args__ = (UniqueConstraint("marketplace", "external_review_id", name="uq_review_external"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), nullable=False)
+    external_review_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sentiment: Mapped[ReviewSentiment | None] = mapped_column(Enum(ReviewSentiment), nullable=True)
+    is_answered: Mapped[bool] = mapped_column(Boolean, default=False)
+    reply_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

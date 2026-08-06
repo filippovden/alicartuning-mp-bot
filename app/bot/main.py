@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from app.bot.handlers import common, list_products, new_product
+from app.bot.handlers import admin, analytics, common, competitors, list_products, new_product, reviews
 from app.bot.middlewares import DbSessionMiddleware
 from app.config import settings
 
@@ -23,7 +23,11 @@ async def main() -> None:
 
     dp.update.middleware(DbSessionMiddleware())
     dp.include_router(common.router)
+    dp.include_router(admin.router)
     dp.include_router(new_product.router)
+    dp.include_router(competitors.router)
+    dp.include_router(analytics.router)
+    dp.include_router(reviews.router)
     dp.include_router(list_products.router)
 
     logger.info("Бот ALICARTUNING запущен, начинаю polling...")

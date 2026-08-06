@@ -56,6 +56,39 @@ class OzonClient(BaseMarketplaceClient):
         walk(result)
         return nodes
 
+    async def get_category_leaves(self) -> list[dict[str, Any]]:
+        """Плоский список листьев дерева: пары (category_id, type_id), которые нужно
+        указывать при создании товара в POST /v2/product/import. Ozon не даёт поиск
+        категорий по имени, поэтому листья кэшируются в БД (OzonCategoryNode) и
+        фильтруются локально — см. app/services/category_search.py.
+        """
+        response = await self._request("POST", "/v2/category/tree", json_body={})
+        result = response.json().get("result", [])
+
+        leaves: list[dict[str, Any]] = []
+
+        def walk(items: list[dict], category_id: int | None, category_name: str | None) -> None:
+            for item in items:
+                if item.get("type_id"):
+                    leaves.append(
+                        {
+                            "category_id": category_id,
+                            "category_name": category_name or "",
+                            "type_id": item["type_id"],
+                            "type_name": item.get("type_name", ""),
+                        }
+                    )
+                    if item.get("children"):
+                        walk(item["children"], category_id, category_name)
+                else:
+                    next_category_id = item.get("category_id", category_id)
+                    next_category_name = item.get("category_name", category_name)
+                    if item.get("children"):
+                        walk(item["children"], next_category_id, next_category_name)
+
+        walk(result, None, None)
+        return leaves
+
     async def get_category_attributes(self, category_id: int, type_id: int) -> list[CategoryAttribute]:
         """POST /v2/category/attribute/values (список атрибутов категории с ID)."""
         response = await self._request(
@@ -116,3 +149,39 @@ class OzonClient(BaseMarketplaceClient):
         """POST /v1/product/import/info — статус асинхронной задачи импорта товаров."""
         response = await self._request("POST", "/v1/product/import/info", json_body={"task_id": task_id})
         return response.json().get("result", {})
+
+    # --- Аналитика (раздел 4, V3 ТЗ) ------------------------------------------
+
+    async def get_analytics_data(
+        self,
+        date_from: str,
+        date_to: str,
+        metrics: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """POST /v1/analytics/data — аналитика продаж (выручка, заказы, конверсия)."""
+        body = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "metrics": metrics or ["revenue", "ordered_units"],
+            "dimension": dimensions or ["sku"],
+            "limit": limit,
+            "offset": 0,
+        }
+        response = await self._request("POST", "/v1/analytics/data", json_body=body)
+        return response.json().get("result", {})
+
+    # --- Отзывы (раздел 4, V3 ТЗ — «Работа с отзывами») ------------------------
+
+    async def list_reviews(self, status: str = "UNPROCESSED", limit: int = 20, last_id: str = "") -> dict[str, Any]:
+        """POST /v1/review/list — список отзывов покупателей."""
+        body = {"status": status, "limit": limit, "last_id": last_id}
+        response = await self._request("POST", "/v1/review/list", json_body=body)
+        return response.json()
+
+    async def comment_review(self, review_id: str, text: str) -> dict[str, Any]:
+        """POST /v1/review/comment/create — ответ на отзыв."""
+        body = {"review_id": review_id, "text": text, "mark_review_as_processed": True}
+        response = await self._request("POST", "/v1/review/comment/create", json_body=body)
+        return response.json()
