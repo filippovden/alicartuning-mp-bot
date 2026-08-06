@@ -20,6 +20,7 @@ from app.config import settings
 from app.db.models import (
     Category,
     CategoryAttr,
+    CompetitorPriceSnapshot,
     OzonCategoryNode,
     Product,
     PublishLog,
@@ -96,6 +97,23 @@ class ReviewAdmin(ModelView, model=Review):
     can_create = False
 
 
+class CompetitorPriceSnapshotAdmin(ModelView, model=CompetitorPriceSnapshot):
+    name = "Снимок цен конкурентов"
+    name_plural = "История цен конкурентов (тайминг-аналитика)"
+    icon = "fa-solid fa-chart-line"
+    column_list = [
+        CompetitorPriceSnapshot.id,
+        CompetitorPriceSnapshot.product_id,
+        CompetitorPriceSnapshot.query,
+        CompetitorPriceSnapshot.avg_price,
+        CompetitorPriceSnapshot.item_count,
+        CompetitorPriceSnapshot.captured_at,
+    ]
+    column_sortable_list = [CompetitorPriceSnapshot.captured_at, CompetitorPriceSnapshot.avg_price]
+    can_create = False  # заполняется Celery-задачей snapshot_competitor_prices
+    can_edit = False
+
+
 class PublishLogAdmin(ModelView, model=PublishLog):
     name = "Лог публикации"
     name_plural = "Логи публикации"
@@ -123,7 +141,16 @@ def register_admin(app: FastAPI) -> Admin | None:
     secret_key = settings.admin_panel_secret_key or settings.admin_panel_password
     admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=secret_key))
 
-    for view in (CategoryAdmin, CategoryAttrAdmin, OzonCategoryNodeAdmin, ProductAdmin, ReviewAdmin, PublishLogAdmin, UserAdmin):
+    for view in (
+        CategoryAdmin,
+        CategoryAttrAdmin,
+        OzonCategoryNodeAdmin,
+        ProductAdmin,
+        CompetitorPriceSnapshotAdmin,
+        ReviewAdmin,
+        PublishLogAdmin,
+        UserAdmin,
+    ):
         admin.add_view(view)
 
     logger.info("Веб-админка смонтирована на /admin")

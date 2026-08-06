@@ -1,0 +1,223 @@
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import pytest
+import respx
+
+from app.db.models import CompetitorPriceSnapshot, Marketplace, Product, User
+from app.services.pricing_intelligence import (
+    MIN_SNAPSHOTS_FOR_TREND,
+    analyze_demand_by_weekday,
+    build_recommendation,
+    build_timing_report,
+    get_price_trend,
+    snapshot_competitor_prices,
+)
+
+WB_SEARCH_URL = "https://search.wb.ru/exactmatch/ru/common/v9/search"
+
+
+async def _make_product(session, **overrides) -> Product:
+    user = User(telegram_id=overrides.pop("telegram_id", 800001))
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+
+    defaults = dict(user_id=user.id, brand="ALICARTUNING", car_model="Lada Vesta", title="Тестовый товар")
+    defaults.update(overrides)
+    product = Product(**defaults)
+    session.add(product)
+    await session.commit()
+    await session.refresh(product)
+    return product
+
+
+async def _add_snapshot(session, product_id: int, avg_price: float, days_ago: int) -> CompetitorPriceSnapshot:
+    snapshot = CompetitorPriceSnapshot(
+        product_id=product_id,
+        query="Lada Vesta",
+        marketplace=Marketplace.WB,
+        avg_price=avg_price,
+        min_price=avg_price - 50,
+        max_price=avg_price + 50,
+        item_count=10,
+        captured_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
+    )
+    session.add(snapshot)
+    await session.commit()
+    return snapshot
+
+
+# --- snapshot_competitor_prices ---------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_snapshot_competitor_prices_creates_row(session):
+    respx.get(WB_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"products": [{"name": "Товар конкурента", "salePriceU": 100000, "brand": "X"}]}},
+        )
+    )
+    product = await _make_product(session)
+    snapshot = await snapshot_competitor_prices(session, product)
+
+    assert snapshot is not None
+    assert snapshot.avg_price == 1000.0
+    assert snapshot.item_count == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_snapshot_competitor_prices_no_query_returns_none(session):
+    product = await _make_product(session, car_model=None, title=None)
+    snapshot = await snapshot_competitor_prices(session, product)
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_snapshot_competitor_prices_api_error_returns_none(session):
+    respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(500))
+    product = await _make_product(session)
+    snapshot = await snapshot_competitor_prices(session, product)
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_snapshot_competitor_prices_empty_results_returns_none(session):
+    respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": {"products": []}}))
+    product = await _make_product(session)
+    snapshot = await snapshot_competitor_prices(session, product)
+    assert snapshot is None
+
+
+# --- get_price_trend ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_price_trend_insufficient_data(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 1000, days_ago=5)
+
+    trend = await get_price_trend(session, product.id)
+    assert trend.direction == "unknown"
+    assert trend.snapshots_count == 1
+
+
+@pytest.mark.asyncio
+async def test_price_trend_detects_upward_trend(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 1000, days_ago=20)
+    await _add_snapshot(session, product.id, 1050, days_ago=10)
+    await _add_snapshot(session, product.id, 1200, days_ago=1)
+
+    trend = await get_price_trend(session, product.id)
+    assert trend.direction == "up"
+    assert trend.change_pct == 20.0
+
+
+@pytest.mark.asyncio
+async def test_price_trend_detects_downward_trend(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 1200, days_ago=20)
+    await _add_snapshot(session, product.id, 1100, days_ago=10)
+    await _add_snapshot(session, product.id, 1000, days_ago=1)
+
+    trend = await get_price_trend(session, product.id)
+    assert trend.direction == "down"
+    assert trend.change_pct < 0
+
+
+@pytest.mark.asyncio
+async def test_price_trend_flat_within_threshold(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 1000, days_ago=20)
+    await _add_snapshot(session, product.id, 1010, days_ago=10)
+    await _add_snapshot(session, product.id, 1030, days_ago=1)  # +3% — ниже порога значимости
+
+    trend = await get_price_trend(session, product.id)
+    assert trend.direction == "flat"
+
+
+@pytest.mark.asyncio
+async def test_price_trend_ignores_old_snapshots_outside_window(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 500, days_ago=90)  # вне окна 30 дней
+    await _add_snapshot(session, product.id, 1000, days_ago=20)
+    await _add_snapshot(session, product.id, 1010, days_ago=10)
+    await _add_snapshot(session, product.id, 1030, days_ago=1)
+
+    trend = await get_price_trend(session, product.id, days=30)
+    assert trend.snapshots_count == 3  # старый снимок не учтён
+
+
+# --- analyze_demand_by_weekday ------------------------------------------------
+
+
+def test_demand_pattern_insufficient_days_returns_none_best_day():
+    revenue = {"2026-08-03": 1000.0, "2026-08-04": 500.0}  # только 2 дня с данными
+    pattern = analyze_demand_by_weekday(revenue)
+    assert pattern.best_day is None
+    assert pattern.worst_day is None
+
+
+def test_demand_pattern_finds_best_and_worst_day():
+    # 2026-08-03 = понедельник; строим 3 недели данных, чтобы был явный паттерн
+    revenue = {}
+    base = datetime(2026, 8, 3)
+    weekday_amounts = [500, 500, 500, 500, 2000, 300, 300]  # пятница (индекс 4) — пик
+    for week in range(3):
+        for i, amount in enumerate(weekday_amounts):
+            d = base + timedelta(days=7 * week + i)
+            revenue[d.strftime("%Y-%m-%d")] = amount + week  # небольшой разброс
+
+    pattern = analyze_demand_by_weekday(revenue)
+    assert pattern.best_day == "Пятница"
+    assert pattern.worst_day in ("Суббота", "Воскресенье")
+    assert pattern.days_with_data == 7
+
+
+# --- build_recommendation / build_timing_report ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_recommendation_unknown_trend_mentions_insufficient_data():
+    from app.services.pricing_intelligence import PriceTrend
+
+    trend = PriceTrend(direction="unknown", change_pct=None, snapshots_count=1)
+    text = build_recommendation(trend, None)
+    assert "Недостаточно" in text or "недостаточно" in text.lower() or str(MIN_SNAPSHOTS_FOR_TREND) in text
+
+
+@pytest.mark.asyncio
+async def test_build_recommendation_down_trend_suggests_price_action():
+    from app.services.pricing_intelligence import PriceTrend
+
+    trend = PriceTrend(direction="down", change_pct=-15.0, snapshots_count=5, first_avg_price=1200, last_avg_price=1020)
+    text = build_recommendation(trend, None)
+    assert "снижаются" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_recommendation_flat_trend_suggests_promotion():
+    from app.services.pricing_intelligence import PriceTrend
+
+    trend = PriceTrend(direction="flat", change_pct=1.0, snapshots_count=5, first_avg_price=1000, last_avg_price=1010)
+    text = build_recommendation(trend, None)
+    assert "продвижение" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_timing_report_end_to_end(session):
+    product = await _make_product(session)
+    await _add_snapshot(session, product.id, 1200, days_ago=20)
+    await _add_snapshot(session, product.id, 1100, days_ago=10)
+    await _add_snapshot(session, product.id, 1000, days_ago=1)
+
+    report = await build_timing_report(session, product, revenue_by_date=None)
+    assert report.trend.direction == "down"
+    assert report.demand is None
+    assert "снижаются" in report.recommendation.lower()

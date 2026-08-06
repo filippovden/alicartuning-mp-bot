@@ -23,6 +23,10 @@ celery_app.conf.beat_schedule = {
         "task": "poll_reviews",
         "schedule": 60 * 60,  # раздел 4 ТЗ, V3: «уведомления о новых отзывах»
     },
+    "snapshot-competitor-prices-daily": {
+        "task": "snapshot_competitor_prices",
+        "schedule": 24 * 60 * 60,  # тайминг-аналитика требует ежедневной истории цен
+    },
 }
 
 
@@ -135,5 +139,33 @@ def poll_reviews_task() -> dict:
             await bot.session.close()
 
         return {"new_reviews": len(new_reviews), "negative": len(negative)}
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="snapshot_competitor_prices")
+def snapshot_competitor_prices_task() -> dict:
+    """Ежедневный снимок цен конкурентов по всем товарам с указанным SKU/моделью
+    авто — накапливает историю для тайминг-аналитики (app/services/pricing_intelligence.py)."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db.models import Product
+    from app.db.session import async_session_factory
+    from app.services.pricing_intelligence import snapshot_competitor_prices
+
+    async def _run() -> dict:
+        async with async_session_factory() as session:
+            stmt = select(Product).where(Product.vendor_code.is_not(None))
+            products = list((await session.execute(stmt)).scalars().all())
+
+            taken = 0
+            for product in products:
+                snapshot = await snapshot_competitor_prices(session, product)
+                if snapshot is not None:
+                    taken += 1
+
+            return {"products_checked": len(products), "snapshots_taken": taken}
 
     return asyncio.run(_run())

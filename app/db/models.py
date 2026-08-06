@@ -296,3 +296,23 @@ class Review(Base):
     reply_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- COMPETITOR PRICE SNAPSHOTS (тайминг-аналитика: тренды цен и спроса) -------
+# Публичный поиск WB отдаёт только текущие цены конкурентов — для тренда во
+# времени («цены растут/падают») их нужно самим периодически снимать и хранить.
+# См. app/services/pricing_intelligence.py.
+
+
+class CompetitorPriceSnapshot(Base):
+    __tablename__ = "competitor_price_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    query: Mapped[str] = mapped_column(String(255), nullable=False)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), default=Marketplace.WB)
+    avg_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    min_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    max_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

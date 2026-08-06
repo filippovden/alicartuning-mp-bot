@@ -70,6 +70,35 @@ async def get_ozon_sales_summary(period_days: int = 30, client: OzonClient | Non
     return summary
 
 
+async def get_wb_revenue_by_date(
+    period_days: int = 60,
+    sku: str | None = None,
+    client: WbStatisticsClient | None = None,
+) -> dict[str, float]:
+    """Выручка WB по датам (YYYY-MM-DD) за период — сырьё для анализа паттернов
+    спроса по дням недели (см. app/services/pricing_intelligence.py). Если указан
+    `sku`, учитываются только продажи этого артикула."""
+    client = client or WbStatisticsClient()
+    date_from = (date.today() - timedelta(days=period_days)).isoformat()
+    sales = await client.get_sales(date_from)
+
+    by_date: dict[str, float] = {}
+    for sale in sales:
+        if str(sale.get("saleID", "")).startswith("R"):
+            continue
+        if sku and str(sale.get("supplierArticle")) != str(sku):
+            continue
+
+        sale_date = str(sale.get("date") or "")[:10]  # "2026-08-06T00:00:00" -> "2026-08-06"
+        if not sale_date:
+            continue
+
+        amount = float(sale.get("forPay") or sale.get("priceWithDisc") or 0)
+        by_date[sale_date] = by_date.get(sale_date, 0.0) + amount
+
+    return by_date
+
+
 def recommend_price(
     cost_price: float,
     target_margin_pct: float = 35.0,
