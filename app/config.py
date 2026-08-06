@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
 
+    # Веб-админка (SQLAdmin) — раздел «Admin-инструмент сопоставления категорий».
+    # Панель монтируется, только если задан пароль — без него по умолчанию выключена
+    # (не хотим случайно поднять бизнес-данные без авторизации).
+    admin_panel_username: str = "admin"
+    admin_panel_password: str = ""
+    admin_panel_secret_key: str = ""
+
     @property
     def telegram_admin_id_list(self) -> list[int]:
         return [int(x) for x in self.telegram_admin_ids.split(",") if x.strip()]

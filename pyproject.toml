@@ -19,6 +19,8 @@ dependencies = [
     "redis>=5.0",
     "python-dotenv>=1.0",
     "Pillow>=10.4",
+    "sqladmin>=0.20",
+    "itsdangerous>=2.2",
 ]
 
 [project.optional-dependencies]

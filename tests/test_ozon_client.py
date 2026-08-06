@@ -51,6 +51,7 @@ async def test_import_products_error_raises():
         return_value=httpx.Response(429, json={"message": "Too Many Requests"})
     )
     client = OzonClient(client_id="cid", api_key="key", base_url=BASE_URL)
+    client.max_retries = 0  # без ожидания повторов — здесь проверяем только факт ошибки
     with pytest.raises(MarketplaceAPIError) as exc_info:
         await client.import_products([{"offer_id": "ART123"}])
     assert exc_info.value.status_code == 429

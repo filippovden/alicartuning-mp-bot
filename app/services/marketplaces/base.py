@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class MarketplaceAPIError(Exception):
@@ -52,10 +56,19 @@ class ImageUploadResult:
 
 
 class BaseMarketplaceClient:
-    """Общая обёртка над httpx для клиентов WB/Ozon."""
+    """Общая обёртка над httpx для клиентов WB/Ozon.
+
+    Лимиты запросов (раздел 3, 10 ТЗ — «Ошибки и лимиты»): WB и Ozon возвращают 429
+    при превышении частоты запросов; Ozon дополнительно отдаёт поле
+    `retry_after_seconds` в теле ответа (тип ошибки `rate_limit_exceeded`). При 429
+    клиент делает до `max_retries` повторов с экспоненциальным backoff, уважая это
+    поле или заголовок `Retry-After`, если он есть.
+    """
 
     base_url: str = ""
     request_timeout: float = 20.0
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
 
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or self.base_url
@@ -72,19 +85,52 @@ class BaseMarketplaceClient:
         json_body: Any = None,
     ) -> httpx.Response:
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=self.request_timeout) as client:
-            try:
-                response = await client.request(
-                    method, url, params=params, json=json_body, headers=self._headers()
+
+        for attempt in range(self.max_retries + 1):
+            async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+                try:
+                    response = await client.request(
+                        method, url, params=params, json=json_body, headers=self._headers()
+                    )
+                except httpx.RequestError as exc:
+                    raise MarketplaceAPIError(f"Сетевая ошибка при запросе к {url}: {exc}") from exc
+
+            if response.status_code == 429 and attempt < self.max_retries:
+                delay = self._retry_delay(response, attempt)
+                logger.warning("429 от %s, повтор через %.1fс (попытка %d/%d)", url, delay, attempt + 1, self.max_retries)
+                await asyncio.sleep(delay)
+                continue
+
+            if response.status_code >= 400:
+                message = self._extract_error_message(response)
+                raise MarketplaceAPIError(
+                    message, status_code=response.status_code, payload=self._safe_json(response)
                 )
-            except httpx.RequestError as exc:
-                raise MarketplaceAPIError(f"Сетевая ошибка при запросе к {url}: {exc}") from exc
 
-        if response.status_code >= 400:
-            message = self._extract_error_message(response)
-            raise MarketplaceAPIError(message, status_code=response.status_code, payload=self._safe_json(response))
+            return response
 
-        return response
+        # Не должно достигаться (цикл либо возвращает, либо кидает исключение выше),
+        # но статически гарантирует корректный тип возврата.
+        raise MarketplaceAPIError(f"Превышено число повторов при 429 для {url}", status_code=429)
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return float(retry_after)
+            except ValueError:
+                pass
+
+        payload = self._safe_json(response)
+        if isinstance(payload, dict):
+            for key in ("retry_after_seconds", "retryAfterSeconds"):
+                if payload.get(key):
+                    try:
+                        return float(payload[key])
+                    except (TypeError, ValueError):
+                        pass
+
+        return self.retry_base_delay * (2**attempt)
 
     @staticmethod
     def _safe_json(response: httpx.Response) -> Any:
