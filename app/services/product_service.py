@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -310,27 +311,106 @@ class ProductService:
         return summary
 
     async def _publish_to_wb(self, product: Product) -> PublishLog:
+        """Публикация в WB — двухшаговая (раздел 7 ТЗ, Content API):
+
+        1. POST /cards/upload создаёт карточку АСИНХРОННО и не возвращает реальный
+           nmID в ответе — только эхо переданных данных. Настоящий nmID появляется
+           позже и его нужно опрашивать через /get/cards/list (см. _wait_for_wb_nm_id).
+        2. Фото грузятся ТОЛЬКО после того, как nmID подтверждён — WB привязывает
+           фото к карточке по nmID, а не по vendorCode.
+        """
         client = WildberriesClient()
         try:
             variant = build_wb_variant(product, product.attributes)
-            result = await client.create_card(product.category.wb_subject_id, [variant])
-            product.wb_nm_id = result.external_id
-            log = PublishLog(
-                product_id=product.id,
-                marketplace=Marketplace.WB,
-                status=PublishStatus.SUCCESS,
-                status_code=result.status_code,
-                external_id=result.external_id,
-                message="Карточка создана",
-            )
+            await client.create_card(product.category.wb_subject_id, [variant])
         except MarketplaceAPIError as exc:
-            log = PublishLog(
-                product_id=product.id,
-                marketplace=Marketplace.WB,
-                status=PublishStatus.ERROR,
+            return await self._save_publish_log(
+                product,
+                Marketplace.WB,
+                PublishStatus.ERROR,
                 status_code=exc.status_code,
-                message=exc.message,
+                message=f"Ошибка создания карточки: {exc.message}",
             )
+
+        nm_id = await self._wait_for_wb_nm_id(client, product.vendor_code)
+        if nm_id is None:
+            return await self._save_publish_log(
+                product,
+                Marketplace.WB,
+                PublishStatus.ERROR,
+                message=(
+                    "Карточка отправлена в WB, но nmID не подтверждён за отведённое "
+                    "время — проверьте позже в личном кабинете WB."
+                ),
+            )
+
+        product.wb_nm_id = str(nm_id)
+
+        image_urls = [
+            image.storage_file.url
+            for image in sorted(product.images, key=lambda img: img.position)
+            if image.storage_file
+            and image.storage_file.url
+            and image.storage_file.url.startswith(("http://", "https://"))
+        ]
+
+        if not image_urls:
+            message = (
+                f"Карточка создана (nmID {nm_id}), но фото не загружены: локальное "
+                "хранилище не отдаёт публичные URL. Настройте S3/CDN "
+                "(STORAGE_BACKEND=s3 в .env), чтобы фото можно было отправить в WB."
+            )
+        else:
+            try:
+                await client.upload_images(nm_id, image_urls)
+                message = f"Карточка создана (nmID {nm_id}), загружено фото: {len(image_urls)}"
+            except MarketplaceAPIError as exc:
+                message = f"Карточка создана (nmID {nm_id}), но фото не загрузились: {exc.message}"
+
+        return await self._save_publish_log(
+            product,
+            Marketplace.WB,
+            PublishStatus.SUCCESS,
+            status_code=200,
+            external_id=str(nm_id),
+            message=message,
+        )
+
+    async def _wait_for_wb_nm_id(
+        self, client: WildberriesClient, vendor_code: str, attempts: int = 5, delay_seconds: float = 2.0
+    ) -> int | None:
+        """Опрашивает POST /get/cards/list, пока карточка с нужным vendorCode не
+        получит nmID от WB, либо не кончится бюджет попыток (см. _publish_to_wb)."""
+        for attempt in range(attempts):
+            try:
+                cards = await client.get_cards_list(vendor_codes=[vendor_code])
+            except MarketplaceAPIError:
+                cards = []
+            for card in cards:
+                if card.get("vendorCode") == vendor_code and card.get("nmID"):
+                    return int(card["nmID"])
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay_seconds)
+        return None
+
+    async def _save_publish_log(
+        self,
+        product: Product,
+        marketplace: Marketplace,
+        status: PublishStatus,
+        *,
+        status_code: int | None = None,
+        external_id: str | None = None,
+        message: str | None = None,
+    ) -> PublishLog:
+        log = PublishLog(
+            product_id=product.id,
+            marketplace=marketplace,
+            status=status,
+            status_code=status_code,
+            external_id=external_id,
+            message=message,
+        )
         self.session.add(log)
         await self.session.commit()
         return log

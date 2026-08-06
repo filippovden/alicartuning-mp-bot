@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import settings
 from app.db.models import Attribute, CategoryAttr, Marketplace, Product
 
 
@@ -31,8 +32,15 @@ def build_wb_variant(product: Product, attributes: list[Attribute]) -> dict[str,
     return variant
 
 
-def build_ozon_item(product: Product, attributes: list[Attribute]) -> dict[str, Any]:
-    """Формирует объект items[] для POST /v2/product/import."""
+def build_ozon_item(product: Product, attributes: list[Attribute], vat: str | None = None) -> dict[str, Any]:
+    """Формирует объект items[] для POST /v2/product/import.
+
+    category_id и type_id обязательны вместе — Ozon с 2022+ использует двухуровневую
+    категоризацию (см. OzonClient.get_category_leaves): category_id указывает раздел
+    дерева, type_id — конкретный тип товара внутри него; без type_id запрос будет
+    отклонён API. vat обязателен для каждого товара (раздел 10 ТЗ — «Ошибки и лимиты»);
+    по умолчанию берётся из настроек (OZON_DEFAULT_VAT), можно переопределить точечно.
+    """
     attrs = [
         {"attribute_id": int(attr.category_attr.external_attr_id), "values": [{"value": attr.value}]}
         for attr in attributes
@@ -45,8 +53,12 @@ def build_ozon_item(product: Product, attributes: list[Attribute]) -> dict[str, 
         "description": product.description or "",
         "price": str(int(product.price)) if product.price else "0",
         "currency_code": "RUB",
+        "vat": vat if vat is not None else settings.ozon_default_vat,
         "category_id": product.category.ozon_category_id if product.category else None,
+        "type_id": product.category.ozon_type_id if product.category else None,
         "attributes": attrs,
+        # Единицы измерения объявлены явно ниже и должны соответствовать хранимым
+        # значениям: weight_g — граммы, length/width/height_mm — миллиметры.
         "weight": product.weight_g or 0,
         "depth": product.length_mm or 0,
         "width": product.width_mm or 0,

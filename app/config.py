@@ -29,9 +29,18 @@ class Settings(BaseSettings):
     ozon_client_id: str = ""
     ozon_api_key: str = ""
     ozon_api_base_url: str = "https://api-seller.ozon.ru"
+    # Ставка НДС для /v2/product/import (поле vat): "0" — без НДС (УСН и т.п.),
+    # "0.05"/"0.07"/"0.10"/"0.20" — соответствующая ставка. Уточните у бухгалтера
+    # фактический режим налогообложения магазина перед публикацией в проде.
+    ozon_default_vat: str = "0"
 
     # AI
     anthropic_api_key: str = ""
+    # claude-sonnet-5 — действующий ID модели Anthropic (актуально на 2026 год, серия
+    # "5" использует короткие ID без даты-суффикса, в отличие от старых поколений).
+    # Sonnet-tier выбран сознательно: генерация SEO-текстов/ответов на отзывы — это
+    # высокочастотная, не самая сложная задача, где Opus избыточен по цене/задержке.
+    # При необходимости переопределяется через ANTHROPIC_MODEL в .env без правки кода.
     anthropic_model: str = "claude-sonnet-5"
     openai_api_key: str = ""
 

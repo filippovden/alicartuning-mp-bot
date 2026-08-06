@@ -26,10 +26,25 @@ ASK_BARCODE = "Штрихкод (EAN, 13 цифр) — или нажмите «�
 ASK_PACKAGE_CONTENTS = "Укажите комплектность (что входит в набор):"
 ASK_MATERIAL = "Материал:"
 ASK_COLOR = "Цвет:"
+ASK_CAR_MODEL = "Модель автомобиля (например, Lada Vesta, Granta, Priora, Niva):"
 ASK_DIMENSIONS = "Размеры в упаковке (длина×ширина×высота, мм). Пример: 500x200x50:"
 ASK_WEIGHT = "Вес в упаковке (грамм):"
-ASK_PHOTOS = "Загрузите 4–5 фото товара (прямоугольное фото 900×1200+, белый фон предпочтителен). Когда закончите — нажмите кнопку ниже."
+MIN_PRODUCT_PHOTOS = 3
+
+ASK_PHOTOS = (
+    f"Загрузите фото товара: минимум {MIN_PRODUCT_PHOTOS}, а лучше 4–5 "
+    "(прямоугольное фото 900×1200+, белый фон предпочтителен). "
+    "Когда наберётся минимум — нажмите кнопку «Готово»."
+)
 PHOTO_RECEIVED = "Фото получено ({count})."
+
+
+def need_more_photos(current: int, minimum: int = MIN_PRODUCT_PHOTOS) -> str:
+    missing = minimum - current
+    return (
+        f"⚠️ Загружено фото: {current}, нужно минимум {minimum}. "
+        f"Добавьте ещё {missing} фото, прежде чем нажать «Готово»."
+    )
 
 CANCELLED = "Диалог отменён. Введите /new, чтобы начать заново."
 NOT_FOUND = "Товар не найден."
@@ -60,11 +75,25 @@ def validation_errors(text: str) -> str:
     return f"⚠️ Карточку нельзя опубликовать, пока не исправлены проблемы:\n\n{text}"
 
 
-def publish_success(wb_id: str | None, ozon_id: str | None) -> str:
+def publish_success(
+    wb_id: str | None,
+    ozon_id: str | None,
+    wb_message: str | None = None,
+    ozon_message: str | None = None,
+) -> str:
     lines = ["✅ <b>Товар успешно опубликован:</b>"]
-    lines.append(f"• Wildberries: {'ID ' + wb_id if wb_id else '—'}")
-    lines.append(f"• Ozon: {'ID ' + ozon_id if ozon_id else '—'}")
+    lines.append(_publish_success_line("Wildberries", wb_id, wb_message))
+    lines.append(_publish_success_line("Ozon", ozon_id, ozon_message))
     return "\n".join(lines)
+
+
+def _publish_success_line(marketplace: str, external_id: str | None, message: str | None) -> str:
+    if not external_id:
+        return f"• {marketplace}: —"
+    line = f"• {marketplace}: ID {external_id}"
+    if message:
+        line += f" ({message})"
+    return line
 
 
 def publish_partial(wb_message: str | None, ozon_message: str | None) -> str:

@@ -11,6 +11,7 @@ httpx>=0.27
 anthropic>=0.39
 celery>=5.4
 redis>=5.0
+# redis>=5.0 также используется aiogram RedisStorage для FSM бота (app/bot/main.py)
 python-dotenv>=1.0
 Pillow>=10.4
 sqladmin>=0.20

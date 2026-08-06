@@ -16,6 +16,7 @@ class NewProductStates(StatesGroup):
     package_contents = State()
     material = State()
     color = State()
+    car_model = State()
     dimensions = State()
     weight = State()
     photos = State()

@@ -235,6 +235,14 @@ async def step_material(message: Message, state: FSMContext, product_service) ->
 async def step_color(message: Message, state: FSMContext, product_service) -> None:
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], color=message.text.strip())
+    await state.set_state(NewProductStates.car_model)
+    await message.answer(texts.ASK_CAR_MODEL)
+
+
+@router.message(NewProductStates.car_model)
+async def step_car_model(message: Message, state: FSMContext, product_service) -> None:
+    data = await state.get_data()
+    await product_service.update_fields(data["product_id"], car_model=message.text.strip())
     await state.set_state(NewProductStates.dimensions)
     await message.answer(texts.ASK_DIMENSIONS)
 
@@ -282,6 +290,12 @@ async def step_photo(message: Message, state: FSMContext, product_service, sessi
 @router.callback_query(F.data == "photos_done", NewProductStates.photos)
 async def photos_done(callback: CallbackQuery, state: FSMContext, product_service) -> None:
     data = await state.get_data()
+    photos_count = len(data["photos"])
+    if photos_count < texts.MIN_PRODUCT_PHOTOS:
+        await callback.answer(texts.need_more_photos(photos_count), show_alert=True)
+        await callback.message.answer(texts.need_more_photos(photos_count))
+        return
+
     pending_attrs = await _collect_pending_attributes(product_service, data["product_id"])
     await state.update_data(pending_attrs=pending_attrs)
     await callback.answer()
@@ -384,6 +398,8 @@ async def confirm_publish(callback: CallbackQuery, state: FSMContext, product_se
             texts.publish_success(
                 summary.wb.external_id if summary.wb else None,
                 summary.ozon.external_id if summary.ozon else None,
+                summary.wb.message if summary.wb else None,
+                summary.ozon.message if summary.ozon else None,
             )
         )
     else:

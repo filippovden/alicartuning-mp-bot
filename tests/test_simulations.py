@@ -25,6 +25,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from app.bot import texts
 from app.bot.handlers import new_product
 from app.services.ai.client import AIContentService
 from app.services.product_service import ProductService
@@ -240,6 +241,9 @@ async def test_full_bot_dialog_simulations(session, monkeypatch):
             msg = _FakeMessage(rng.choice(COLORS), user)
             await new_product.step_color(msg, state, service)
 
+            msg = _FakeMessage(rng.choice(CAR_MODELS), user)
+            await new_product.step_car_model(msg, state, service)
+
             msg = _FakeMessage("500x200x50", user)
             await new_product.step_dimensions(msg, state, service)
 
@@ -247,13 +251,21 @@ async def test_full_bot_dialog_simulations(session, monkeypatch):
             await new_product.step_weight(msg, state, service)
 
             # Загрузку реального файла через Telegram Bot API не симулируем (нужен
-            # живой Bot) — добавляем изображение напрямую через сервис, как это
-            # сделал бы step_photo после скачивания файла.
+            # живой Bot) — добавляем изображения напрямую через сервис и обновляем
+            # состояние диалога, как это сделал бы step_photo после скачивания файла.
+            # Нужен минимум MIN_PRODUCT_PHOTOS, иначе «Готово» отклонит переход (п.7
+            # критических исправлений).
             data = await state.get_data()
             from app.services.storage import save_bytes
 
-            storage_file = await save_bytes(session, b"fake-jpeg-bytes", filename="sim.jpg", content_type="image/jpeg")
-            await service.add_image(data["product_id"], storage_file.id, image_type="main", position=0)
+            photo_ids = []
+            for p in range(texts.MIN_PRODUCT_PHOTOS):
+                storage_file = await save_bytes(
+                    session, b"fake-jpeg-bytes", filename=f"sim-{i}-{p}.jpg", content_type="image/jpeg"
+                )
+                await service.add_image(data["product_id"], storage_file.id, image_type="main", position=p)
+                photo_ids.append(storage_file.id)
+            await state.update_data(photos=photo_ids)
 
             cb = _FakeCallback("photos_done", user)
             await new_product.photos_done(cb, state, service)
@@ -261,6 +273,7 @@ async def test_full_bot_dialog_simulations(session, monkeypatch):
             product = await service.get_product(data["product_id"])
             assert product.title is not None
             assert product.description is not None
+            assert product.car_model is not None
             assert product.status.value == "draft"
 
             results["reached_preview"] += 1
