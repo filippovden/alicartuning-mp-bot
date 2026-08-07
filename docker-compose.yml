@@ -1,35 +1,47 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: alicartuning
-      POSTGRES_PASSWORD: alicartuning
-      POSTGRES_DB: alicartuning
+      POSTGRES_USER: ${POSTGRES_USER:-alicartuning}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alicartuning}
+      POSTGRES_DB: ${POSTGRES_DB:-alicartuning}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # Порт наружу (на хост) намеренно НЕ публикуется — postgres нужен только
+    # другим контейнерам этого docker-compose (они видят его по имени сервиса
+    # через внутреннюю сеть compose). Если нужен доступ с ноутбука (pgAdmin и
+    # т.п.), поднимите SSH-туннель до сервера, а не открывайте порт в интернет:
+    # `ssh -L 5432:localhost:5432 user@server`, а на сервере верните маппинг
+    # `ports: ["127.0.0.1:5432:5432"]`, чтобы порт слушал только локально.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U alicartuning"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-alicartuning}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    # Порт тоже не публикуется наружу — та же логика, что и для postgres.
 
   api:
     build: .
+    restart: unless-stopped
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
-    ports:
-      - "8000:8000"
+    # Порт наружу не публикуется по умолчанию: бот общается с БД напрямую и
+    # backend ему для этого не нужен, а лишний открытый порт — лишняя
+    # поверхность атаки. Если вам реально нужен доступ к /newProduct,
+    # /publish/{id} и т.д. извне (например, для внешней интеграции), раскомментируйте
+    # ниже — но ОБЯЗАТЕЛЬНО убедитесь, что API_AUTH_TOKEN в .env задан
+    # (см. app/api/deps.py) и что это случайная строка, а не пусто.
+    # ports:
+    #   - "8000:8000"
     volumes:
       - ./storage:/app/storage
     command: >
@@ -37,6 +49,7 @@ services:
 
   bot:
     build: .
+    restart: unless-stopped
     env_file: .env
     depends_on:
       - api
@@ -46,6 +59,7 @@ services:
 
   worker:
     build: .
+    restart: unless-stopped
     env_file: .env
     depends_on:
       - redis
@@ -56,6 +70,7 @@ services:
 
   beat:
     build: .
+    restart: unless-stopped
     env_file: .env
     depends_on:
       - redis
