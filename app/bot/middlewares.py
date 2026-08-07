@@ -32,7 +32,11 @@ _USER_EVENT_ATTRS = (
 def _extract_user_id(update: Update) -> int | None:
     for attr in _USER_EVENT_ATTRS:
         obj = getattr(update, attr, None)
-        user = getattr(obj, "from_user", None) if obj is not None else None
+        if obj is None:
+            continue
+        # Большинство типов Update отдают отправителя через from_user, но
+        # PollAnswer и MessageReactionUpdated — через user (см. aiogram.types).
+        user = getattr(obj, "from_user", None) or getattr(obj, "user", None)
         if user is not None:
             return user.id
     return None

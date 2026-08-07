@@ -15,8 +15,13 @@ router = Router(name="admin")
 
 
 def _is_admin(message: Message) -> bool:
+    # Fail-closed, симметрично AccessControlMiddleware (app/bot/middlewares.py):
+    # пустой TELEGRAM_ADMIN_IDS не должен открывать доступ никому. Практически эта
+    # ветка уже недостижима — outer-middleware отклоняет апдейт раньше, чем он
+    # дойдёт до хендлера, — но дублировать fail-open здесь было бы миной на случай
+    # изменения порядка middleware или прямого вызова хендлера.
     admin_ids = settings.telegram_admin_id_list
-    return not admin_ids or message.from_user.id in admin_ids
+    return bool(admin_ids) and message.from_user.id in admin_ids
 
 
 @router.message(Command("synccategories"))

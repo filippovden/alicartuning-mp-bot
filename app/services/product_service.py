@@ -332,7 +332,17 @@ class ProductService:
                 message=f"Ошибка создания карточки: {exc.message}",
             )
 
-        nm_id = await self._wait_for_wb_nm_id(client, product.vendor_code)
+        try:
+            nm_id = await self._wait_for_wb_nm_id(client, product.vendor_code)
+        except MarketplaceAPIError as exc:
+            return await self._save_publish_log(
+                product,
+                Marketplace.WB,
+                PublishStatus.ERROR,
+                status_code=exc.status_code,
+                message=f"Карточка создана, но не удалось проверить статус в WB: {exc.message}",
+            )
+
         if nm_id is None:
             return await self._save_publish_log(
                 product,
@@ -356,9 +366,12 @@ class ProductService:
 
         if not image_urls:
             message = (
-                f"Карточка создана (nmID {nm_id}), но фото не загружены: локальное "
-                "хранилище не отдаёт публичные URL. Настройте S3/CDN "
-                "(STORAGE_BACKEND=s3 в .env), чтобы фото можно было отправить в WB."
+                f"Карточка создана (nmID {nm_id}), но фото не загружены: текущее "
+                "хранилище отдаёт локальный путь к файлу, а не публичный http(s) URL, "
+                "который требует WB. Загрузка фото по ссылке заработает только после "
+                "подключения реального объектного хранилища (S3-совместимое + "
+                "публичный доступ/CDN) — это отдельная доработка app/services/storage.py, "
+                "сейчас там реализован только локальный диск."
             )
         else:
             try:
@@ -380,17 +393,35 @@ class ProductService:
         self, client: WildberriesClient, vendor_code: str, attempts: int = 5, delay_seconds: float = 2.0
     ) -> int | None:
         """Опрашивает POST /get/cards/list, пока карточка с нужным vendorCode не
-        получит nmID от WB, либо не кончится бюджет попыток (см. _publish_to_wb)."""
+        получит nmID от WB, либо не кончится бюджет попыток (см. _publish_to_wb).
+
+        Если хотя бы одна попытка отвечает успешно (даже пустым списком), значит
+        API и ключ рабочие — карточка просто ещё не проиндексирована, и после
+        исчерпания попыток возвращаем None (общее сообщение «не подтверждён»).
+        Но если WB не ответил успешно НИ РАЗУ (например, невалидный WB_API_KEY),
+        пробрасываем исходную ошибку — иначе постоянный сбой авторизации
+        маскируется под временную задержку WB, и пользователь не понимает, что
+        на самом деле нужно чинить ключ, а не «проверить позже».
+        """
+        last_error: MarketplaceAPIError | None = None
         for attempt in range(attempts):
             try:
                 cards = await client.get_cards_list(vendor_codes=[vendor_code])
-            except MarketplaceAPIError:
-                cards = []
+            except MarketplaceAPIError as exc:
+                last_error = exc
+                if attempt < attempts - 1:
+                    await asyncio.sleep(delay_seconds)
+                continue
+
+            last_error = None
             for card in cards:
                 if card.get("vendorCode") == vendor_code and card.get("nmID"):
                     return int(card["nmID"])
             if attempt < attempts - 1:
                 await asyncio.sleep(delay_seconds)
+
+        if last_error is not None:
+            raise last_error
         return None
 
     async def _save_publish_log(
@@ -416,6 +447,23 @@ class ProductService:
         return log
 
     async def _publish_to_ozon(self, product: Product) -> PublishLog:
+        # Ozon требует category_id и type_id ВМЕСТЕ (см. build_ozon_item — двухуровневая
+        # категоризация). Сюда попадаем только когда ozon_category_id уже задан (см.
+        # publish()), поэтому проверяем именно отсутствие пары — type_id. Без этой
+        # проверки запрос уходит в Ozon с type_id: null и падает с непонятной для
+        # пользователя ошибкой API вместо явного «донастройте категорию».
+        category = product.category
+        if category and category.ozon_category_id and not category.ozon_type_id:
+            return await self._save_publish_log(
+                product,
+                Marketplace.OZON,
+                PublishStatus.ERROR,
+                message=(
+                    "У категории задан ozon_category_id, но не задан ozon_type_id — "
+                    "Ozon требует оба поля вместе. Донастройте категорию в /admin."
+                ),
+            )
+
         client = OzonClient()
         try:
             item = build_ozon_item(product, product.attributes)

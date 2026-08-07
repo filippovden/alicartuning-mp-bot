@@ -126,6 +126,63 @@ async def test_publish_to_wb_nm_id_never_appears(session, monkeypatch):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_publish_to_wb_nm_id_poll_always_errors_surfaces_real_error(session, monkeypatch):
+    """Если /get/cards/list не отвечает успешно НИ РАЗУ (например, невалидный
+    WB_API_KEY), пользователь должен увидеть реальную причину, а не общее
+    «nmID не подтверждён — проверьте позже» (см. code-review находку)."""
+
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("app.services.product_service.asyncio.sleep", fake_sleep)
+
+    service, product_id = await _make_product(session, telegram_id=7, vendor_code="ART-7", wb_subject_id=888)
+    product = await service.get_product(product_id)
+
+    respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(
+        return_value=httpx.Response(401, json={"errorText": "Невалидный токен"})
+    )
+
+    log = await service._publish_to_wb(product)
+
+    assert log.status == PublishStatus.ERROR
+    assert "Невалидный токен" in log.message
+    assert "не подтверждён" not in log.message  # не маскируем реальную причину
+    assert product.wb_nm_id is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_wb_nm_id_poll_transient_error_then_recovers(session, monkeypatch):
+    """Единичный сбой опроса (например, 500) не должен считаться фатальным —
+    как только WB ответил успешно, ищем nmID дальше как обычно."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("app.services.product_service.asyncio.sleep", fake_sleep)
+
+    service, product_id = await _make_product(session, telegram_id=8, vendor_code="ART-8", wb_subject_id=999)
+    product = await service.get_product(product_id)
+
+    respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+    cards_route = respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list")
+    cards_route.side_effect = [
+        httpx.Response(500, json={"errorText": "Временная ошибка"}),
+        httpx.Response(200, json={"cards": [{"vendorCode": "ART-8", "nmID": 321}]}),
+    ]
+
+    log = await service._publish_to_wb(product)
+
+    assert log.status == PublishStatus.SUCCESS
+    assert product.wb_nm_id == "321"
+    assert sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_publish_to_wb_create_card_fails(session):
     service, product_id = await _make_product(session, telegram_id=4, vendor_code="ART-4", wb_subject_id=555)
     product = await service.get_product(product_id)
@@ -186,5 +243,5 @@ async def test_publish_to_wb_local_storage_has_no_public_url(session):
 
     assert log.status == PublishStatus.SUCCESS
     assert "фото не загружены" in log.message
-    assert "S3/CDN" in log.message
+    assert "объектного хранилища" in log.message
     assert product.wb_nm_id == "111"

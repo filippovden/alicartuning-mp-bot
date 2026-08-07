@@ -67,8 +67,15 @@ class CompetitorReport:
         return [word for word, _ in counter.most_common(limit)]
 
 
-async def search_wb_competitors(query: str, limit: int = 20) -> CompetitorReport:
-    """Поиск конкурентов на WB через публичный поисковый API витрины (best-effort)."""
+async def search_wb_competitors(query: str, limit: int = 20, exclude_brand: str | None = None) -> CompetitorReport:
+    """Поиск конкурентов на WB через публичный поисковый API витрины (best-effort).
+
+    exclude_brand: если задан, карточки с этим брендом (без учёта регистра)
+    отфильтровываются ДО применения limit. Без этого, после того как товар
+    опубликован на WB, его собственная карточка нередко попадает в выдачу по
+    своему же названию/модели и искажает «среднюю цену конкурентов» ценой
+    самого продавца — по сути, схлопывая сигнал в обратную связь с самим собой.
+    """
     params = {
         "query": query,
         "resultset": "catalog",
@@ -86,19 +93,28 @@ async def search_wb_competitors(query: str, limit: int = 20) -> CompetitorReport
         raise CompetitorAnalysisError(f"Не удалось получить данные поиска WB: {exc}") from exc
 
     products = payload.get("data", {}).get("products", [])
+    exclude_norm = exclude_brand.strip().casefold() if exclude_brand else None
+
     items = []
-    for p in products[:limit]:
+    for p in products:
+        brand = p.get("brand")
+        if exclude_norm and brand and brand.strip().casefold() == exclude_norm:
+            continue
+
         price_kopecks = p.get("salePriceU") or p.get("priceU")
         price = price_kopecks / 100 if price_kopecks else None
         items.append(
             CompetitorItem(
                 name=p.get("name", ""),
                 price=price,
-                brand=p.get("brand"),
+                brand=brand,
                 rating=p.get("reviewRating") or p.get("rating"),
                 feedbacks=p.get("feedbacks"),
             )
         )
+        if len(items) >= limit:
+            break
+
     return CompetitorReport(query=query, items=items)
 
 

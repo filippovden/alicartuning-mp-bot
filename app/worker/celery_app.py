@@ -146,26 +146,50 @@ def poll_reviews_task() -> dict:
 @celery_app.task(name="snapshot_competitor_prices")
 def snapshot_competitor_prices_task() -> dict:
     """Ежедневный снимок цен конкурентов по всем товарам с указанным SKU/моделью
-    авто — накапливает историю для тайминг-аналитики (app/services/pricing_intelligence.py)."""
+    авто — накапливает историю для тайминг-аналитики (app/services/pricing_intelligence.py).
+
+    После снимков проактивно проверяет тренд по свежеснятым товарам и, если хотя
+    бы по одному тренд уже значимый (см. TREND_SIGNIFICANT_PCT), шлёт админам
+    один дайджест — раньше тренд можно было увидеть только вручную через
+    /analytics <ID>, и никто не узнавал о нём, пока сам не спросит."""
     import asyncio
 
+    from aiogram import Bot
     from sqlalchemy import select
 
+    from app.config import settings
     from app.db.models import Product
     from app.db.session import async_session_factory
-    from app.services.pricing_intelligence import snapshot_competitor_prices
+    from app.services.pricing_intelligence import (
+        check_significant_price_trends,
+        format_trend_digest,
+        snapshot_competitor_prices,
+    )
 
     async def _run() -> dict:
         async with async_session_factory() as session:
             stmt = select(Product).where(Product.vendor_code.is_not(None))
             products = list((await session.execute(stmt)).scalars().all())
 
-            taken = 0
+            snapshotted: list[Product] = []
             for product in products:
                 snapshot = await snapshot_competitor_prices(session, product)
                 if snapshot is not None:
-                    taken += 1
+                    snapshotted.append(product)
 
-            return {"products_checked": len(products), "snapshots_taken": taken}
+            alerts = await check_significant_price_trends(session, snapshotted)
+            if alerts and settings.telegram_bot_token and settings.telegram_admin_id_list:
+                bot = Bot(token=settings.telegram_bot_token)
+                text = format_trend_digest(alerts)
+                for admin_id in settings.telegram_admin_id_list:
+                    try:
+                        await bot.send_message(admin_id, text)
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Не удалось отправить дайджест трендов админу %s", admin_id, exc_info=True
+                        )
+                await bot.session.close()
+
+            return {"products_checked": len(products), "snapshots_taken": len(snapshotted), "trend_alerts": len(alerts)}
 
     return asyncio.run(_run())

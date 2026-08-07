@@ -6,6 +6,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
+from app.config import settings
 from app.services.competitor_analysis import CompetitorAnalysisError, search_wb_competitors, suggest_pricing
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,7 @@ async def cmd_competitors(message: Message) -> None:
     query = args[1].strip()
     await message.answer(f"⏳ Ищу конкурентов на Wildberries по запросу «{query}»...")
     try:
-        report = await search_wb_competitors(query)
+        report = await search_wb_competitors(query, exclude_brand=settings.brand_name)
     except CompetitorAnalysisError as exc:
         await message.answer(f"⚠️ {exc}")
         return
@@ -77,7 +78,7 @@ async def callback_competitors(callback: CallbackQuery, product_service) -> None
 
     await callback.message.answer(f"⏳ Ищу конкурентов на Wildberries по запросу «{query}»...")
     try:
-        report = await search_wb_competitors(query)
+        report = await search_wb_competitors(query, exclude_brand=product.brand or settings.brand_name)
     except CompetitorAnalysisError as exc:
         await callback.message.answer(f"⚠️ {exc}")
         return

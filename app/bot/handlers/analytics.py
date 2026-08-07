@@ -6,6 +6,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from app.config import settings
 from app.services.analytics_service import get_ozon_sales_summary, get_wb_revenue_by_date, get_wb_sales_summary, recommend_price
 from app.services.competitor_analysis import CompetitorAnalysisError, search_wb_competitors
 from app.services.marketplaces.base import MarketplaceAPIError
@@ -70,7 +71,7 @@ async def _product_price_recommendation(message: Message, product_service, sessi
     query = product.car_model or product.title
     if query:
         try:
-            report = await search_wb_competitors(query)
+            report = await search_wb_competitors(query, exclude_brand=product.brand or settings.brand_name)
             competitor_avg = report.average_price
         except CompetitorAnalysisError as exc:
             logger.warning("Анализ конкурентов для рекомендации цены не удался: %s", exc)

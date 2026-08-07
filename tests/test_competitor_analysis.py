@@ -48,6 +48,58 @@ async def test_search_wb_competitors_network_error_raises():
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_search_wb_competitors_excludes_own_brand():
+    """После публикации карточка продавца часто сама попадает в выдачу по
+    своему названию/модели — без фильтрации она бы искажала «среднюю цену
+    конкурентов» собственной ценой (см. app/services/pricing_intelligence.py)."""
+    respx.get(WB_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "products": [
+                        {"name": "Накладки Lada Vesta", "salePriceU": 100000, "brand": "ALICARTUNING"},
+                        {"name": "Накладки Lada Vesta", "salePriceU": 120000, "brand": "Other"},
+                    ]
+                }
+            },
+        )
+    )
+    report = await search_wb_competitors("накладки Lada Vesta", exclude_brand="ALICARTUNING")
+    assert len(report.items) == 1
+    assert report.items[0].brand == "Other"
+    assert report.average_price == 1200.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_wb_competitors_brand_exclusion_is_case_insensitive():
+    respx.get(WB_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"products": [{"name": "x", "salePriceU": 100000, "brand": "alicartuning"}]}},
+        )
+    )
+    report = await search_wb_competitors("x", exclude_brand="ALICARTUNING")
+    assert report.items == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_wb_competitors_exclusion_does_not_shrink_limit():
+    """Фильтрация применяется до limit — исключённый бренд не должен уменьшать
+    итоговое количество результатов, если в выдаче есть больше товаров."""
+    products = [{"name": "own", "salePriceU": 100000, "brand": "ALICARTUNING"}] + [
+        {"name": f"comp{i}", "salePriceU": 100000, "brand": "Other"} for i in range(3)
+    ]
+    respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": {"products": products}}))
+    report = await search_wb_competitors("x", limit=3, exclude_brand="ALICARTUNING")
+    assert len(report.items) == 3
+    assert all(item.brand == "Other" for item in report.items)
+
+
+@pytest.mark.asyncio
 async def test_search_ozon_competitors_not_supported():
     with pytest.raises(CompetitorAnalysisError):
         await search_ozon_competitors("что-то")

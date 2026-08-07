@@ -33,10 +33,18 @@ class _FakeCallbackQuery:
         self.answered.append((text, show_alert))
 
 
+class _FakeUserEventWithUserField:
+    """aiogram.types.PollAnswer / MessageReactionUpdated отдают отправителя через
+    .user, а не .from_user, как остальные типы Update — см. app/bot/middlewares.py."""
+
+    def __init__(self, user: _FakeUser):
+        self.user = user
+
+
 class _FakeUpdate:
     """Минимальный дублёр aiogram.types.Update — только поля, которые читает middleware."""
 
-    def __init__(self, message=None, callback_query=None):
+    def __init__(self, message=None, callback_query=None, poll_answer=None, message_reaction=None):
         self.message = message
         self.edited_message = None
         self.channel_post = None
@@ -46,11 +54,11 @@ class _FakeUpdate:
         self.chosen_inline_result = None
         self.shipping_query = None
         self.pre_checkout_query = None
-        self.poll_answer = None
+        self.poll_answer = poll_answer
         self.my_chat_member = None
         self.chat_member = None
         self.chat_join_request = None
-        self.message_reaction = None
+        self.message_reaction = message_reaction
 
 
 @pytest.mark.asyncio
@@ -147,3 +155,81 @@ async def test_denies_when_no_user_extractable(monkeypatch):
 
     result = await middleware(handler, update, {})
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_allows_poll_answer_from_whitelisted_user(monkeypatch):
+    """PollAnswer отдаёт отправителя через .user, а не .from_user — регрессионный
+    тест на находку code-review (иначе whitelisted-админ получал бы «Доступ
+    запрещён» на голосование в собственном опросе)."""
+    monkeypatch.setattr(settings, "telegram_admin_ids", "111")
+    middleware = AccessControlMiddleware()
+
+    user = _FakeUser(111)
+    update = _FakeUpdate(poll_answer=_FakeUserEventWithUserField(user))
+
+    handler_called = False
+
+    async def handler(event, data):
+        nonlocal handler_called
+        handler_called = True
+        return "ok"
+
+    result = await middleware(handler, update, {})
+
+    assert handler_called is True
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_allows_message_reaction_from_whitelisted_user(monkeypatch):
+    monkeypatch.setattr(settings, "telegram_admin_ids", "111")
+    middleware = AccessControlMiddleware()
+
+    user = _FakeUser(111)
+    update = _FakeUpdate(message_reaction=_FakeUserEventWithUserField(user))
+
+    handler_called = False
+
+    async def handler(event, data):
+        nonlocal handler_called
+        handler_called = True
+        return "ok"
+
+    result = await middleware(handler, update, {})
+
+    assert handler_called is True
+    assert result == "ok"
+
+
+# --- app.bot.handlers.admin._is_admin (fail-closed, симметрично middleware) -----
+
+
+@pytest.mark.asyncio
+async def test_is_admin_fails_closed_when_whitelist_empty(monkeypatch):
+    from app.bot.handlers.admin import _is_admin
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", "")
+    message = _FakeMessage(_FakeUser(111))
+
+    assert _is_admin(message) is False
+
+
+@pytest.mark.asyncio
+async def test_is_admin_true_for_whitelisted_user(monkeypatch):
+    from app.bot.handlers.admin import _is_admin
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", "111")
+    message = _FakeMessage(_FakeUser(111))
+
+    assert _is_admin(message) is True
+
+
+@pytest.mark.asyncio
+async def test_is_admin_false_for_non_whitelisted_user(monkeypatch):
+    from app.bot.handlers.admin import _is_admin
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", "111")
+    message = _FakeMessage(_FakeUser(999))
+
+    assert _is_admin(message) is False

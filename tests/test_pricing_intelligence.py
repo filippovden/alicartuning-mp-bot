@@ -10,6 +10,8 @@ from app.services.pricing_intelligence import (
     analyze_demand_by_weekday,
     build_recommendation,
     build_timing_report,
+    check_significant_price_trends,
+    format_trend_digest,
     get_price_trend,
     snapshot_competitor_prices,
 )
@@ -221,3 +223,69 @@ async def test_build_timing_report_end_to_end(session):
     assert report.trend.direction == "down"
     assert report.demand is None
     assert "снижаются" in report.recommendation.lower()
+
+
+# --- check_significant_price_trends / format_trend_digest --------------------
+# Проактивный дайджест для Celery-задачи snapshot_competitor_prices_task
+# (app/worker/celery_app.py) — раньше тренд был виден только через /analytics.
+
+
+@pytest.mark.asyncio
+async def test_check_significant_price_trends_filters_flat_and_unknown(session):
+    up_product = await _make_product(session, telegram_id=1, vendor_code="UP-1")
+    await _add_snapshot(session, up_product.id, 1000, days_ago=20)
+    await _add_snapshot(session, up_product.id, 1100, days_ago=10)
+    await _add_snapshot(session, up_product.id, 1200, days_ago=1)  # +20% — значимый рост
+
+    flat_product = await _make_product(session, telegram_id=2, vendor_code="FLAT-1")
+    await _add_snapshot(session, flat_product.id, 1000, days_ago=20)
+    await _add_snapshot(session, flat_product.id, 1005, days_ago=10)
+    await _add_snapshot(session, flat_product.id, 1010, days_ago=1)  # +1% — не значимо
+
+    unknown_product = await _make_product(session, telegram_id=3, vendor_code="UNK-1")
+    await _add_snapshot(session, unknown_product.id, 1000, days_ago=1)  # 1 замер — мало для тренда
+
+    alerts = await check_significant_price_trends(session, [up_product, flat_product, unknown_product])
+
+    assert len(alerts) == 1
+    assert alerts[0].product_id == up_product.id
+    assert alerts[0].trend.direction == "up"
+    assert alerts[0].label == "UP-1"
+
+
+@pytest.mark.asyncio
+async def test_check_significant_price_trends_detects_down(session):
+    product = await _make_product(session, telegram_id=4, vendor_code="DOWN-1")
+    await _add_snapshot(session, product.id, 1200, days_ago=20)
+    await _add_snapshot(session, product.id, 1100, days_ago=10)
+    await _add_snapshot(session, product.id, 1000, days_ago=1)  # -16.7% — значимое падение
+
+    alerts = await check_significant_price_trends(session, [product])
+
+    assert len(alerts) == 1
+    assert alerts[0].trend.direction == "down"
+
+
+def test_format_trend_digest_lists_all_alerts_with_direction_arrows():
+    from app.services.pricing_intelligence import PriceTrend, TrendAlert
+
+    alerts = [
+        TrendAlert(
+            product_id=1,
+            label="ART-UP",
+            trend=PriceTrend(direction="up", change_pct=20.0, snapshots_count=3, first_avg_price=1000, last_avg_price=1200),
+        ),
+        TrendAlert(
+            product_id=2,
+            label="ART-DOWN",
+            trend=PriceTrend(direction="down", change_pct=-15.0, snapshots_count=3, first_avg_price=1200, last_avg_price=1020),
+        ),
+    ]
+
+    text = format_trend_digest(alerts)
+
+    assert "ART-UP" in text
+    assert "ART-DOWN" in text
+    assert "📈" in text
+    assert "📉" in text
+    assert "/analytics" in text

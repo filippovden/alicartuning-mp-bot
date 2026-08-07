@@ -20,6 +20,7 @@ from statistics import mean
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.models import CompetitorPriceSnapshot, Marketplace, Product
 from app.services.competitor_analysis import CompetitorAnalysisError, search_wb_competitors
 
@@ -53,6 +54,13 @@ class PricingTimingReport:
     recommendation: str
 
 
+@dataclass
+class TrendAlert:
+    product_id: int
+    label: str
+    trend: PriceTrend
+
+
 async def snapshot_competitor_prices(session: AsyncSession, product: Product) -> CompetitorPriceSnapshot | None:
     """Снимает текущие цены конкурентов и сохраняет как точку истории. Вызывается
     как из периодической Celery-задачи, так и опортунистически при обращении к
@@ -62,7 +70,7 @@ async def snapshot_competitor_prices(session: AsyncSession, product: Product) ->
         return None
 
     try:
-        report = await search_wb_competitors(query)
+        report = await search_wb_competitors(query, exclude_brand=product.brand or settings.brand_name)
     except CompetitorAnalysisError:
         return None
 
@@ -186,6 +194,36 @@ def build_recommendation(trend: PriceTrend, demand: DemandPattern | None) -> str
         )
 
     return "\n\n".join(parts)
+
+
+async def check_significant_price_trends(session: AsyncSession, products: list[Product]) -> list[TrendAlert]:
+    """Проверяет тренд цен конкурентов по каждому товару и возвращает только те,
+    где тренд уже значимый (up/down, см. TREND_SIGNIFICANT_PCT). Раньше тренд
+    можно было увидеть только вручную через /analytics <ID> — данные копились
+    ежедневной Celery-задачей (snapshot_competitor_prices), но никто не
+    просматривал их проактивно. Используется в snapshot_competitor_prices_task
+    (app/worker/celery_app.py) для дневного дайджеста админам."""
+    alerts: list[TrendAlert] = []
+    for product in products:
+        trend = await get_price_trend(session, product.id)
+        if trend.direction in ("up", "down"):
+            label = product.vendor_code or product.title or f"#{product.id}"
+            alerts.append(TrendAlert(product_id=product.id, label=label, trend=trend))
+    return alerts
+
+
+def format_trend_digest(alerts: list[TrendAlert]) -> str:
+    """Собирает одно дайджест-сообщение по всем товарам со значимым трендом —
+    вместо отдельного уведомления на каждый товар (см. check_significant_price_trends)."""
+    lines = [f"📊 <b>Значимое изменение цен конкурентов</b> ({len(alerts)} товар(ов)):"]
+    for alert in alerts:
+        arrow = "📈" if alert.trend.direction == "up" else "📉"
+        lines.append(
+            f"{arrow} {alert.label}: {alert.trend.first_avg_price:.0f}₽ → "
+            f"{alert.trend.last_avg_price:.0f}₽ ({alert.trend.change_pct:+.1f}%)"
+        )
+    lines.append("\nПодробности и рекомендации — /analytics <ID товара> в боте.")
+    return "\n".join(lines)
 
 
 async def build_timing_report(
