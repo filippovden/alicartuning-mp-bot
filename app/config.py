@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_admin_ids: str = ""
 
+    # Backend API (FastAPI, app/api/routes/*) — общий секрет в заголовке X-API-Key
+    # (см. app.api.deps.require_api_token). Fail-closed, симметрично
+    # telegram_admin_ids: пустое значение отклоняет ВСЕ запросы, а не отключает
+    # проверку — иначе порт API, опубликованный docker-compose на хост, был бы
+    # доступен без единого ключа и позволял бы дергать /publish/{id} с реальными
+    # ключами WB/Ozon магазина.
+    api_auth_token: str = ""
+
     # DB
     database_url: str = "postgresql+asyncpg://alicartuning:alicartuning@localhost:5432/alicartuning"
     database_url_sync: str = "postgresql+psycopg2://alicartuning:alicartuning@localhost:5432/alicartuning"

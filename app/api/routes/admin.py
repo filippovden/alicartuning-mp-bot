@@ -5,10 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session
+from app.api.deps import get_session, require_api_token
 from app.services.category_search import search_ozon_categories, search_wb_categories, sync_ozon_category_tree
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_api_token)])
 
 
 @router.get("/categories/search/wb")

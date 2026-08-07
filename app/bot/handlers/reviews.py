@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 
 from aiogram import F, Router
@@ -20,11 +21,15 @@ RATING_STARS = {1: "⭐", 2: "⭐⭐", 3: "⭐⭐⭐", 4: "⭐⭐⭐⭐", 5: "�
 
 
 def _format_review(review: Review) -> str:
+    # review.text — публичный отзыв покупателя с WB/Ozon (см. review_service.py),
+    # то есть недоверенный ввод. Бот шлёт сообщения с parse_mode=HTML по
+    # умолчанию (app/bot/main.py) — без экранирования отзыв с разметкой вроде
+    # <a href="..."> отрендерился бы кликабельной ссылкой в чате админа.
     stars = RATING_STARS.get(review.rating or 0, "—")
     lines = [
         f"💬 <b>Новый отзыв</b> ({review.marketplace.value}, {stars})",
         f"SKU: {review.sku or '—'}",
-        f"«{review.text or '(без текста)'}»",
+        f"«{html.escape(review.text) if review.text else '(без текста)'}»",
     ]
     return "\n".join(lines)
 
@@ -75,7 +80,9 @@ async def review_auto_reply(callback: CallbackQuery, session) -> None:
         await callback.message.answer(f"⚠️ Не удалось отправить ответ: {exc.message}")
         return
 
-    await callback.message.answer(f"✅ Ответ отправлен:\n«{reply_text}»")
+    # reply_text сгенерирован AI на основе review.text (недоверенный ввод) —
+    # экранируем по той же причине, что и в _format_review.
+    await callback.message.answer(f"✅ Ответ отправлен:\n«{html.escape(reply_text)}»")
 
 
 @router.callback_query(F.data.startswith("review_manual:"))

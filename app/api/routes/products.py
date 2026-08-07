@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
-from app.api.deps import get_product_service
+from app.api.deps import get_product_service, require_api_token
 from app.schemas.product import (
     NewProductRequest,
     ProductListResponse,
@@ -18,7 +18,7 @@ from app.schemas.product import (
 from app.services.product_service import ProductService
 from app.services.storage import save_bytes
 
-router = APIRouter(tags=["products"])
+router = APIRouter(tags=["products"], dependencies=[Depends(require_api_token)])
 
 
 @router.post("/newProduct", response_model=ProductOut)

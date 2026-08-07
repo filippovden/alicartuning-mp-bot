@@ -10,6 +10,7 @@ SQLAlchemy (например, AiogramShopBot использует тот же SQ
 from __future__ import annotations
 
 import logging
+import secrets
 
 from fastapi import FastAPI
 from sqladmin import Admin, ModelView
@@ -39,7 +40,11 @@ class AdminAuth(AuthenticationBackend):
     async def login(self, request: Request) -> bool:
         form = await request.form()
         username, password = form.get("username"), form.get("password")
-        if username == settings.admin_panel_username and password == settings.admin_panel_password:
+        # compare_digest — сравнение за постоянное время, а не ранний выход по
+        # первому несовпавшему байту (защита от timing-атак на пароль).
+        username_ok = isinstance(username, str) and secrets.compare_digest(username, settings.admin_panel_username)
+        password_ok = isinstance(password, str) and secrets.compare_digest(password, settings.admin_panel_password)
+        if username_ok and password_ok:
             request.session.update({"admin_authenticated": True})
             return True
         return False
