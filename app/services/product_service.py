@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.db.models import (
     Attribute,
     BotDialog,
@@ -28,6 +30,8 @@ from app.services.marketplaces.mapping import build_ozon_item, build_wb_variant
 from app.services.marketplaces.ozon import OzonClient
 from app.services.marketplaces.wildberries import WildberriesClient
 from app.services.validation import ValidationResult, validate_product
+
+logger = logging.getLogger(__name__)
 
 PRODUCT_LOAD_OPTIONS = (
     selectinload(Product.category).selectinload(Category.attrs),
@@ -217,8 +221,13 @@ class ProductService:
         return processed
 
     async def generate_infographic_images(self, product_id: int, count: int = 1) -> list[Image]:
-        """Генерирует инфографику преимуществ на основе AI-буллетов (раздел 11, 12 ТЗ)."""
-        from app.services import image_pipeline
+        """Генерирует инфографику преимуществ товара (раздел 11, 12 ТЗ).
+
+        При заданном XAI_API_KEY использует настоящую AI-генерацию изображения
+        через Grok Imagine (app/services/ai/grok_imagine.py) по промпту,
+        собранному из буллетов Claude. Без ключа или при сбое API — fallback на
+        MVP-рендер Pillow (текст на белом фоне, app/services/image_pipeline.py),
+        бот не падает."""
         from app.services.storage import save_bytes
 
         product = await self.get_product(product_id)
@@ -237,11 +246,42 @@ class ProductService:
 
         created: list[Image] = []
         for i in range(count):
-            infographic_bytes = image_pipeline.generate_infographic(bullets, title=product.brand)
+            infographic_bytes = await self._render_infographic(product, bullets)
             storage_file = await save_bytes(self.session, infographic_bytes, filename="infographic.png", content_type="image/png")
             image = await self.add_image(product_id, storage_file.id, image_type="infographic", position=100 + i)
             created.append(image)
         return created
+
+    async def _render_infographic(self, product: Product, bullets: list[str]) -> bytes:
+        if settings.xai_api_key:
+            try:
+                return await self._render_infographic_via_grok(product, bullets)
+            except MarketplaceAPIError:
+                logger.warning(
+                    "Grok Imagine недоступен для товара %s — использую Pillow-fallback для инфографики",
+                    product.id,
+                    exc_info=True,
+                )
+
+        from app.services import image_pipeline
+
+        return image_pipeline.generate_infographic(bullets, title=product.brand)
+
+    async def _render_infographic_via_grok(self, product: Product, bullets: list[str]) -> bytes:
+        from app.services.ai import prompts
+        from app.services.ai.grok_imagine import GrokImagineClient
+
+        padded_bullets = (list(bullets) + ["", "", ""])[:3]
+        prompt = prompts.INFOGRAPHIC_PROMPT.format(
+            brand=product.brand or settings.brand_name,
+            title=product.title or "",
+            car_model=product.car_model or "",
+            material=product.material or "",
+            color=product.color or "",
+            bullets=padded_bullets,
+        )
+        client = GrokImagineClient()
+        return await client.generate_infographic(prompt)
 
     # --- AI-контент ---------------------------------------------------
 
@@ -299,11 +339,16 @@ class ProductService:
 
         summary = PublishSummary(wb=wb_log, ozon=ozon_log)
         logs = [log for log in (wb_log, ozon_log) if log is not None]
+        # PARTIAL (карточка создана, но что-то — например, фото — не доехало)
+        # не считается полным успехом, но и не ошибкой: карточка уже живая на
+        # площадке, поэтому учитывается наравне с SUCCESS в проверке «хоть
+        # что-то опубликовано».
+        published_like = (PublishStatus.SUCCESS, PublishStatus.PARTIAL)
         if not logs:
             product.status = ProductStatus.ERROR
         elif all(log.status == PublishStatus.SUCCESS for log in logs):
             product.status = ProductStatus.PUBLISHED
-        elif any(log.status == PublishStatus.SUCCESS for log in logs):
+        elif any(log.status in published_like for log in logs):
             product.status = ProductStatus.PARTIALLY_PUBLISHED
         else:
             product.status = ProductStatus.ERROR
@@ -365,20 +410,35 @@ class ProductService:
         ]
 
         if not image_urls:
-            message = (
-                f"Карточка создана (nmID {nm_id}), но фото не загружены: текущее "
-                "хранилище отдаёт локальный путь к файлу, а не публичный http(s) URL, "
-                "который требует WB. Загрузка фото по ссылке заработает только после "
-                "подключения реального объектного хранилища (S3-совместимое + "
-                "публичный доступ/CDN) — это отдельная доработка app/services/storage.py, "
-                "сейчас там реализован только локальный диск."
+            from app.services.storage import s3_configured
+
+            reason = (
+                "текущее хранилище отдаёт локальный путь к файлу, а не публичный "
+                "http(s) URL, который требует WB. Настройте S3-совместимое "
+                "хранилище (STORAGE_BACKEND=s3 + S3_* в .env)."
+                if not s3_configured()
+                else "не нашлось ни одного файла с уже загруженным публичным URL."
             )
-        else:
-            try:
-                await client.upload_images(nm_id, image_urls)
-                message = f"Карточка создана (nmID {nm_id}), загружено фото: {len(image_urls)}"
-            except MarketplaceAPIError as exc:
-                message = f"Карточка создана (nmID {nm_id}), но фото не загрузились: {exc.message}"
+            return await self._save_publish_log(
+                product,
+                Marketplace.WB,
+                PublishStatus.PARTIAL,
+                status_code=200,
+                external_id=str(nm_id),
+                message=f"Карточка создана (nmID {nm_id}), но фото не загружены: {reason}",
+            )
+
+        try:
+            await client.upload_images(nm_id, image_urls)
+        except MarketplaceAPIError as exc:
+            return await self._save_publish_log(
+                product,
+                Marketplace.WB,
+                PublishStatus.PARTIAL,
+                status_code=200,
+                external_id=str(nm_id),
+                message=f"Карточка создана (nmID {nm_id}), но фото не загрузились: {exc.message}",
+            )
 
         return await self._save_publish_log(
             product,
@@ -386,11 +446,15 @@ class ProductService:
             PublishStatus.SUCCESS,
             status_code=200,
             external_id=str(nm_id),
-            message=message,
+            message=f"Карточка создана (nmID {nm_id}), загружено фото: {len(image_urls)}",
         )
 
     async def _wait_for_wb_nm_id(
-        self, client: WildberriesClient, vendor_code: str, attempts: int = 5, delay_seconds: float = 2.0
+        self,
+        client: WildberriesClient,
+        vendor_code: str,
+        attempts: int | None = None,
+        delay_seconds: float | None = None,
     ) -> int | None:
         """Опрашивает POST /get/cards/list, пока карточка с нужным vendorCode не
         получит nmID от WB, либо не кончится бюджет попыток (см. _publish_to_wb).
@@ -403,6 +467,9 @@ class ProductService:
         маскируется под временную задержку WB, и пользователь не понимает, что
         на самом деле нужно чинить ключ, а не «проверить позже».
         """
+        attempts = attempts if attempts is not None else settings.wb_nm_id_poll_attempts
+        delay_seconds = delay_seconds if delay_seconds is not None else settings.wb_nm_id_poll_delay_seconds
+
         last_error: MarketplaceAPIError | None = None
         for attempt in range(attempts):
             try:

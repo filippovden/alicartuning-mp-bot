@@ -6,11 +6,12 @@ import re
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from app.bot import texts
 from app.bot.keyboards import category_match_kb, confirm_publish_kb, photos_done_kb, skip_kb
 from app.bot.states import NewProductStates
+from app.config import settings
 from app.services.category_search import (
     ozon_cache_is_empty,
     search_ozon_categories,
@@ -371,9 +372,40 @@ async def process_images(callback: CallbackQuery, product_service) -> None:
 async def generate_graphic(callback: CallbackQuery, product_service) -> None:
     product_id = int(callback.data.split(":")[1])
     await callback.answer("Генерирую инфографику...")
-    await callback.message.answer("🎨 Генерирую инфографику преимуществ...")
-    images = await product_service.generate_infographic_images(product_id)
-    await callback.message.answer(f"✅ Готово: {len(images)} изображение(й) добавлено к товару.")
+
+    if settings.xai_api_key:
+        await callback.message.answer("⏳ Генерирую инфографику через Grok Imagine...")
+    else:
+        await callback.message.answer(
+            "⏳ Генерирую инфографику (XAI_API_KEY не задан — использую базовый рендер "
+            "буллетов на фоне, см. README про AI-инфографику)..."
+        )
+
+    try:
+        images = await product_service.generate_infographic_images(product_id)
+    except Exception as exc:
+        logger.warning("Не удалось сгенерировать инфографику для товара %s", product_id, exc_info=True)
+        await callback.message.answer(f"⚠️ Не удалось сгенерировать инфографику: {exc}")
+        return
+
+    if not images:
+        await callback.message.answer("⚠️ Инфографика не создана.")
+        return
+
+    product = await product_service.get_product(product_id)
+    created_ids = {img.id for img in images}
+    stored = [img for img in product.images if img.id in created_ids and img.storage_file]
+
+    if stored:
+        from pathlib import Path
+
+        photo_bytes = Path(stored[-1].storage_file.path).read_bytes()
+        await callback.message.answer_photo(
+            BufferedInputFile(photo_bytes, filename="infographic.png"),
+            caption="✅ Инфографика добавлена к карточке.",
+        )
+    else:
+        await callback.message.answer(f"✅ Готово: {len(images)} изображение(й) добавлено к товару.")
 
 
 @router.callback_query(F.data.startswith("publish:"))

@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # фактический режим налогообложения магазина перед публикацией в проде.
     ozon_default_vat: str = "0"
 
+    # Опрос nmID после создания карточки WB (ProductService._wait_for_wb_nm_id) —
+    # /content/v2/cards/upload создаёт карточку асинхронно, nmID появляется не
+    # сразу. 12 попыток по 3с — до ~36с общего ожидания; WB может индексировать
+    # карточку дольше 5×2с (прежнее значение), из-за чего фото не успевали
+    # загрузиться при первой попытке публикации.
+    wb_nm_id_poll_attempts: int = 12
+    wb_nm_id_poll_delay_seconds: float = 3.0
+
     # AI
     anthropic_api_key: str = ""
     # claude-sonnet-5 — действующий ID модели Anthropic (актуально на 2026 год, серия
@@ -49,8 +57,18 @@ class Settings(BaseSettings):
     # Sonnet-tier выбран сознательно: генерация SEO-текстов/ответов на отзывы — это
     # высокочастотная, не самая сложная задача, где Opus избыточен по цене/задержке.
     # При необходимости переопределяется через ANTHROPIC_MODEL в .env без правки кода.
+    # ⚠️ Перед продом один раз проверьте это значение живым ключом — доступность
+    # моделей может меняться, а это единственная строка, от которой зависит вся
+    # генерация контента карточек.
     anthropic_model: str = "claude-sonnet-5"
     openai_api_key: str = ""
+
+    # xAI Grok Imagine — генерация AI-инфографики для карточек (замена MVP
+    # Pillow-рендера, см. app/services/ai/grok_imagine.py). Без ключа
+    # используется старый Pillow-fallback (app/services/image_pipeline.py),
+    # бот не падает.
+    xai_api_key: str = ""
+    xai_image_model: str = "grok-imagine-image-quality"
 
     # Storage
     storage_backend: str = "local"

@@ -138,3 +138,25 @@ def test_build_wb_variant_basic_fields():
     assert variant["brand"] == "ALICARTUNING"
     assert variant["sizes"][0]["price"] == 1999
     assert variant["sizes"][0]["skus"] == ["4600000000099"]
+
+
+def test_build_wb_variant_tech_size_defaults_to_zero():
+    """Запчасти/аксессуары автотюнинга — категория без размерной сетки, но WB
+    требует sizes[].techSize даже для таких товаров, иначе карточка чаще
+    отклоняется (см. критические правки)."""
+    category = _make_category()
+    product = _make_product(category)
+
+    variant = build_wb_variant(product, [])
+
+    assert variant["sizes"][0]["techSize"] == "0"
+
+
+def test_build_wb_variant_tech_size_uses_size_attribute_if_present():
+    category = _make_category()
+    product = _make_product(category)
+    size_attr = _make_attribute(category, Marketplace.WB, "30", "Размер", "42")
+
+    variant = build_wb_variant(product, [size_attr])
+
+    assert variant["sizes"][0]["techSize"] == "42"

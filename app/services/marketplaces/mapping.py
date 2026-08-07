@@ -24,12 +24,26 @@ def build_wb_variant(product: Product, attributes: list[Attribute]) -> dict[str,
         "characteristics": characteristics,
         "sizes": [
             {
+                "techSize": _wb_tech_size(attributes),
                 "price": int(product.price) if product.price else 0,
                 "skus": [product.barcode] if product.barcode else [],
             }
         ],
     }
     return variant
+
+
+def _wb_tech_size(attributes: list[Attribute]) -> str:
+    """WB требует sizes[].techSize даже для категорий без реальной размерной
+    сетки (запчасти/аксессуары автотюнинга) — без этого поля карточка чаще
+    отклоняется на таких категориях. "0" — стандартное значение WB для
+    «безразмерных» товаров; если среди характеристик категории всё же есть
+    явный размер (название содержит «размер»), используем его значение вместо
+    заглушки."""
+    for attr in attributes:
+        if attr.category_attr.marketplace == Marketplace.WB and "размер" in attr.category_attr.name.lower():
+            return attr.value
+    return "0"
 
 
 def build_ozon_item(product: Product, attributes: list[Attribute], vat: str | None = None) -> dict[str, Any]:

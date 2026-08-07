@@ -91,9 +91,11 @@ async def test_publish_to_wb_polls_until_nm_id_appears(session, monkeypatch):
 
     log = await service._publish_to_wb(product)
 
-    assert log.status == PublishStatus.SUCCESS
+    # Карточка создана и nmID подтверждён — но фото не загружали, поэтому
+    # PARTIAL, а не полный SUCCESS (см. критические правки).
+    assert log.status == PublishStatus.PARTIAL
     assert product.wb_nm_id == "42"
-    assert sleeps == [2.0]  # одна пауза перед тем, как nmID нашёлся на второй попытке
+    assert sleeps == [3.0]  # одна пауза перед тем, как nmID нашёлся на второй попытке
     assert "фото не загружены" in log.message  # к товару не добавляли фото
 
 
@@ -120,8 +122,8 @@ async def test_publish_to_wb_nm_id_never_appears(session, monkeypatch):
     assert log.status == PublishStatus.ERROR
     assert "не подтверждён" in log.message
     assert product.wb_nm_id is None
-    assert len(sleeps) == 4  # attempts=5 → 4 паузы между попытками
-    assert cards_route.call_count == 5
+    assert len(sleeps) == 11  # attempts=12 (settings.wb_nm_id_poll_attempts) → 11 пауз
+    assert cards_route.call_count == 12
 
 
 @pytest.mark.asyncio
@@ -176,9 +178,41 @@ async def test_publish_to_wb_nm_id_poll_transient_error_then_recovers(session, m
 
     log = await service._publish_to_wb(product)
 
-    assert log.status == PublishStatus.SUCCESS
+    # nmID подтверждён, но фото к товару не добавляли — PARTIAL, а не SUCCESS.
+    assert log.status == PublishStatus.PARTIAL
     assert product.wb_nm_id == "321"
-    assert sleeps == [2.0]
+    assert sleeps == [3.0]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_wait_for_wb_nm_id_uses_settings_defaults(session, monkeypatch):
+    """attempts/delay настраиваются через settings (WB_NM_ID_POLL_ATTEMPTS/
+    WB_NM_ID_POLL_DELAY_SECONDS), а не хардкожены — см. критические правки."""
+    from app.config import settings
+    from app.services.marketplaces.wildberries import WildberriesClient
+
+    monkeypatch.setattr(settings, "wb_nm_id_poll_attempts", 3)
+    monkeypatch.setattr(settings, "wb_nm_id_poll_delay_seconds", 7.0)
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("app.services.product_service.asyncio.sleep", fake_sleep)
+
+    service, product_id = await _make_product(session, telegram_id=10, vendor_code="ART-10", wb_subject_id=333)
+    cards_route = respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(
+        return_value=httpx.Response(200, json={"cards": []})
+    )
+
+    client = WildberriesClient()
+    nm_id = await service._wait_for_wb_nm_id(client, "ART-10")
+
+    assert nm_id is None
+    assert cards_route.call_count == 3
+    assert sleeps == [7.0, 7.0]
 
 
 @pytest.mark.asyncio
@@ -219,8 +253,9 @@ async def test_publish_to_wb_photo_upload_failure_is_not_blocking(session):
     log = await service._publish_to_wb(product)
 
     # Карточка уже создана в WB — сбой загрузки фото не должен превращать
-    # публикацию в ошибку, но пользователь обязан увидеть понятное сообщение.
-    assert log.status == PublishStatus.SUCCESS
+    # публикацию в ERROR (карточка живая), но и не полный SUCCESS — PARTIAL,
+    # плюс пользователь обязан увидеть понятное сообщение.
+    assert log.status == PublishStatus.PARTIAL
     assert "но фото не загрузились" in log.message
     assert "Файл повреждён" in log.message
     assert product.wb_nm_id == "999"
@@ -241,7 +276,37 @@ async def test_publish_to_wb_local_storage_has_no_public_url(session):
 
     log = await service._publish_to_wb(product)
 
-    assert log.status == PublishStatus.SUCCESS
+    assert log.status == PublishStatus.PARTIAL
     assert "фото не загружены" in log.message
-    assert "объектного хранилища" in log.message
+    assert "S3-совместимое" in log.message
     assert product.wb_nm_id == "111"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_wb_no_public_url_with_s3_configured_gives_different_reason(session, monkeypatch):
+    """Если S3 уже настроен, но конкретный файл всё равно без публичного URL
+    (редкий случай — например, апload в S3 не удался для этой фото), сообщение
+    не должно советовать «настройте S3», раз он уже настроен."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_endpoint_url", "https://s3.example.com")
+    monkeypatch.setattr(settings, "s3_bucket", "bucket")
+    monkeypatch.setattr(settings, "s3_access_key", "key")
+    monkeypatch.setattr(settings, "s3_secret_key", "secret")
+
+    service, product_id = await _make_product(session, telegram_id=9, vendor_code="ART-9", wb_subject_id=222)
+    await _add_image(session, service, product_id, None)  # S3-аплоад для этого файла не удался
+    product = await service.get_product(product_id)
+
+    respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+    respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(
+        return_value=httpx.Response(200, json={"cards": [{"vendorCode": "ART-9", "nmID": 222}]})
+    )
+
+    log = await service._publish_to_wb(product)
+
+    assert log.status == PublishStatus.PARTIAL
+    assert "не нашлось ни одного файла с уже загруженным публичным URL" in log.message
+    assert "Настройте S3" not in log.message

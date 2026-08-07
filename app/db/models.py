@@ -45,6 +45,10 @@ class ImageType(str, enum.Enum):
 
 class PublishStatus(str, enum.Enum):
     SUCCESS = "success"
+    # Карточка на маркетплейсе создана, но что-то из публикации не доехало
+    # (сейчас — фото WB: см. ProductService._publish_to_wb). Не полный успех,
+    # но и не ошибка — карточка уже живая, нужно доделать вручную.
+    PARTIAL = "partial"
     ERROR = "error"
 
 
