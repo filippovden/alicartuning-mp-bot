@@ -35,20 +35,35 @@ async def cmd_analytics(message: Message, product_service, session) -> None:
         lines.append(f"\n<b>Wildberries:</b> {wb_summary.total_units} продаж на {wb_summary.total_revenue:.0f}₽")
         lines += _top_sku_lines(wb_summary.by_sku)
     except MarketplaceAPIError as exc:
-        lines.append(f"\n<b>Wildberries:</b> ⚠️ не удалось получить данные ({exc.message})")
+        lines.append(_marketplace_error_line("Wildberries", exc))
 
     try:
         ozon_summary = await get_ozon_sales_summary(PERIOD_DAYS)
         lines.append(f"\n<b>Ozon:</b> {ozon_summary.total_units} продаж на {ozon_summary.total_revenue:.0f}₽")
         lines += _top_sku_lines(ozon_summary.by_sku)
     except MarketplaceAPIError as exc:
-        lines.append(f"\n<b>Ozon:</b> ⚠️ не удалось получить данные ({exc.message})")
+        lines.append(_marketplace_error_line("Ozon", exc))
 
     lines.append(
         "\nПодсказка: /analytics [ID товара] — рекомендация цены и тайминг "
         "продвижения по конкретному товару."
     )
     await message.answer("\n".join(lines))
+
+
+def _marketplace_error_line(marketplace: str, exc: MarketplaceAPIError) -> str:
+    """Раздел H ТЗ: никакого техжаргона в лицо пользователю. WB Statistics API
+    (get_wb_sales_summary → /api/v1/supplier/sales и т.п.) официально ограничен
+    1 запросом в минуту на ключ и при превышении отдаёт сырое английское
+    сообщение вида «Limited by global limiter, per seller ...» — показываем
+    вместо него понятную причину и что делать."""
+    message = exc.message or ""
+    if exc.status_code == 429 or "limit" in message.lower():
+        return (
+            f"\n<b>{marketplace}:</b> ⚠️ статистика временно ограничена площадкой "
+            "(слишком частые запросы) — повторите через минуту через /analytics."
+        )
+    return f"\n<b>{marketplace}:</b> ⚠️ не удалось получить данные ({message})"
 
 
 def _top_sku_lines(by_sku: dict[str, dict], limit: int = 5) -> list[str]:
