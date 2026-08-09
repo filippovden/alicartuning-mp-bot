@@ -2,10 +2,13 @@
 часто подходит нескольким моделям, и проще размножить карточку, чем заполнять
 её с нуля (см. ProductService.clone_product).
 
-Копирует категорию/бренд/материал/цвет/комплектацию/габариты/вес/цену/фото;
-НЕ копирует артикул/штрихкод/название/описание/nmID/ozon_product_id — у
-клона свой SKU (заполняется через /edit) и текст, сгенерированный заново под
-новую модель авто.
+Копирует категорию/бренд/материал/цвет/комплектацию/габариты/вес/цену/фото/
+характеристики; НЕ копирует артикул/штрихкод/название/описание/nmID/
+ozon_product_id — у клона свой SKU (спрашивается сразу в диалоге) и текст,
+сгенерированный заново под новую модель авто. Кнопка «Опубликовать» в превью
+появляется только после того, как артикул уже задан — публикация без него
+всё равно отклонилась бы валидацией, но так пользователь не тратит на это
+лишний шаг.
 """
 
 from __future__ import annotations
@@ -18,13 +21,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import confirm_publish_kb, publish_links_kb
+from app.bot.keyboards import confirm_publish_kb, publish_links_kb, skip_kb
 from app.bot.states import CloneBatchStates, CloneProductStates
 
 logger = logging.getLogger(__name__)
 router = Router(name="clone_product")
 
 MAX_BATCH_CLONE_MODELS = 5
+SKIP_TEMPLATE_CALLBACK = "skip:clone_template"
 
 
 @router.message(Command("clone"))
@@ -61,19 +65,20 @@ async def clone_car_model(message: Message, state: FSMContext, product_service) 
     data = await state.get_data()
     car_model = message.text.strip()
     await product_service.update_fields(data["product_id"], car_model=car_model)
+    await state.set_state(CloneProductStates.vendor_code)
+    await message.answer(texts.ASK_CLONE_VENDOR_CODE)
+
+
+@router.message(CloneProductStates.vendor_code)
+async def clone_vendor_code(message: Message, state: FSMContext, product_service) -> None:
+    data = await state.get_data()
+    vendor_code = message.text.strip()
+    await product_service.update_fields(data["product_id"], vendor_code=vendor_code)
     await state.clear()
 
     await message.answer(texts.generating_preview())
     product = await product_service.generate_ai_content(data["product_id"])
-    await message.answer(
-        texts.draft_preview(
-            product.title,
-            product.description,
-            float(product.price) if product.price else None,
-            float(product.cost_price) if product.cost_price else None,
-        ),
-        reply_markup=confirm_publish_kb(product.id),
-    )
+    await message.answer(texts.clone_draft_preview(product), reply_markup=confirm_publish_kb(product.id))
 
 
 @router.callback_query(F.data.startswith("clonebatch:"))
@@ -86,10 +91,7 @@ async def clone_batch_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(CloneBatchStates.car_models)
-async def clone_batch_models(message: Message, state: FSMContext, product_service) -> None:
-    data = await state.get_data()
-    source_id = data["source_product_id"]
-
+async def clone_batch_models(message: Message, state: FSMContext) -> None:
     models = [m.strip() for m in message.text.split(",") if m.strip()]
     if not models:
         await message.answer("Не нашёл ни одной модели — введите через запятую, например: Vesta, Granta")
@@ -98,6 +100,44 @@ async def clone_batch_models(message: Message, state: FSMContext, product_servic
         await message.answer(texts.too_many_models(MAX_BATCH_CLONE_MODELS, len(models)))
         return
 
+    await state.update_data(car_models=models)
+    await state.set_state(CloneBatchStates.vendor_code_template)
+    await message.answer(texts.ask_vendor_code_template(), reply_markup=skip_kb("clone_template"))
+
+
+@router.callback_query(F.data == SKIP_TEMPLATE_CALLBACK)
+async def clone_batch_template_skip(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    await _create_batch_clones(callback.message, state, product_service, data["source_product_id"], data["car_models"], None)
+
+
+@router.message(CloneBatchStates.vendor_code_template)
+async def clone_batch_template(message: Message, state: FSMContext, product_service) -> None:
+    data = await state.get_data()
+    template = message.text.strip() or None
+    await _create_batch_clones(message, state, product_service, data["source_product_id"], data["car_models"], template)
+
+
+def _build_vendor_code(template: str | None, car_model: str, clone_id: int) -> str:
+    model_token = car_model.strip().upper().replace(" ", "")
+    if not template:
+        return f"ART-CLONE-{clone_id}"
+    if "{model}" in template:
+        return template.replace("{model}", model_token)
+    # В шаблоне забыли {model} — добавляем модель сами, иначе все клоны в
+    # пакете получили бы один и тот же артикул и не прошли бы валидацию.
+    return f"{template}-{model_token}"
+
+
+async def _create_batch_clones(
+    message: Message,
+    state: FSMContext,
+    product_service,
+    source_id: int,
+    models: list[str],
+    template: str | None,
+) -> None:
     await state.clear()
     await message.answer(f"⏳ Создаю {len(models)} черновик(ов)...")
 
@@ -105,7 +145,8 @@ async def clone_batch_models(message: Message, state: FSMContext, product_servic
     for car_model in models:
         try:
             clone = await product_service.clone_product(source_id)
-            await product_service.update_fields(clone.id, car_model=car_model)
+            vendor_code = _build_vendor_code(template, car_model, clone.id)
+            await product_service.update_fields(clone.id, car_model=car_model, vendor_code=vendor_code)
             product = await product_service.generate_ai_content(clone.id)
             created.append(product)
         except Exception:

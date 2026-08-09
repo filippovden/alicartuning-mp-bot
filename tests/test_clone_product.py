@@ -13,14 +13,18 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.bot import texts
 from app.bot.handlers.clone_product import (
     MAX_BATCH_CLONE_MODELS,
+    _build_vendor_code,
     clone_batch_models,
     clone_batch_start,
+    clone_batch_template,
+    clone_batch_template_skip,
     clone_button,
     clone_car_model,
+    clone_vendor_code,
     cmd_clone,
 )
 from app.bot.states import CloneBatchStates, CloneProductStates
-from app.db.models import Category, ImageType, ProductStatus, StorageFile
+from app.db.models import Attribute, Category, CategoryAttr, ImageType, ProductStatus, StorageFile
 from app.services.ai.client import AIContentService
 from app.services.product_service import ProductService
 
@@ -96,6 +100,15 @@ async def _make_source_product(session, **overrides):
     await session.commit()
     await session.refresh(storage_file)
     await service.add_image(product.id, storage_file.id, image_type="main", position=0)
+
+    category_attr = CategoryAttr(
+        category_id=category.id, marketplace="wildberries", external_attr_id="1", name="Материал"
+    )
+    session.add(category_attr)
+    await session.commit()
+    await session.refresh(category_attr)
+    session.add(Attribute(product_id=product.id, category_attr_id=category_attr.id, value="ABS-пластик"))
+    await session.commit()
 
     return service, product.id
 
@@ -212,8 +225,28 @@ async def test_clone_button_starts_flow(session):
 
 
 @pytest.mark.asyncio
-async def test_clone_car_model_generates_content_and_shows_preview(session, monkeypatch):
-    monkeypatch.setattr(AIContentService, "generate_full_content", _fake_full_content)
+async def test_clone_product_copies_attributes(session):
+    service, source_id = await _make_source_product(session)
+    source = await service.get_product(source_id)
+    clone = await service.clone_product(source_id)
+
+    assert len(source.attributes) == 1
+    assert len(clone.attributes) == 1
+    assert clone.attributes[0].category_attr_id == source.attributes[0].category_attr_id
+    assert clone.attributes[0].value == source.attributes[0].value
+    assert clone.attributes[0].variant_id is None
+
+
+@pytest.mark.asyncio
+async def test_clone_car_model_asks_vendor_code_without_generating_content(session, monkeypatch):
+    generated = False
+
+    async def _spy(self, draft):
+        nonlocal generated
+        generated = True
+        return await _fake_full_content(self, draft)
+
+    monkeypatch.setattr(AIContentService, "generate_full_content", _spy)
 
     service, source_id = await _make_source_product(session)
     clone = await service.clone_product(source_id)
@@ -227,9 +260,35 @@ async def test_clone_car_model_generates_content_and_shows_preview(session, monk
 
     product = await service.get_product(clone.id)
     assert product.car_model == "Lada Granta"
+    assert product.title is None  # текст ещё не сгенерирован — нет vendor_code
+    assert not generated
+    assert await state.get_state() == "CloneProductStates:vendor_code"
+    assert any(t == texts.ASK_CLONE_VENDOR_CODE for t in message.answered)
+
+
+@pytest.mark.asyncio
+async def test_clone_vendor_code_generates_content_and_shows_preview_with_publish_button(session, monkeypatch):
+    monkeypatch.setattr(AIContentService, "generate_full_content", _fake_full_content)
+
+    service, source_id = await _make_source_product(session)
+    clone = await service.clone_product(source_id)
+    await service.update_fields(clone.id, car_model="Lada Granta")
+
+    state = _make_state(1)
+    await state.set_state(CloneProductStates.vendor_code)
+    await state.update_data(product_id=clone.id)
+
+    message = _FakeMessage(text="ART-GRANTA-1")
+    await clone_vendor_code(message, state, service)
+
+    product = await service.get_product(clone.id)
+    assert product.vendor_code == "ART-GRANTA-1"
     assert "Granta" in product.title
     assert await state.get_state() is None
-    assert any("Черновик карточки" in t for t in message.answered)
+
+    preview = next(t for t in message.answered if "Черновик карточки" in t)
+    assert "Артикул:</b> ART-GRANTA-1" in preview
+    assert "Модель:</b> Lada Granta" in preview
 
 
 # --- Хендлеры: пакетное клонирование --------------------------------------------
@@ -248,21 +307,67 @@ async def test_clone_batch_start_asks_for_models(session):
 
 
 @pytest.mark.asyncio
-async def test_clone_batch_models_creates_drafts_with_summary(session, monkeypatch):
-    monkeypatch.setattr(AIContentService, "generate_full_content", _fake_full_content)
-
+async def test_clone_batch_models_asks_for_vendor_code_template(session):
     service, source_id = await _make_source_product(session)
     state = _make_state(1)
     await state.set_state(CloneBatchStates.car_models)
     await state.update_data(source_product_id=source_id)
 
     message = _FakeMessage(text="Vesta, Granta, Priora")
-    await clone_batch_models(message, state, service)
+    await clone_batch_models(message, state)
+
+    assert await state.get_state() == "CloneBatchStates:vendor_code_template"
+    assert any("Шаблон артикула" in t for t in message.answered)
+
+
+@pytest.mark.asyncio
+async def test_clone_batch_template_creates_drafts_with_substituted_sku(session, monkeypatch):
+    monkeypatch.setattr(AIContentService, "generate_full_content", _fake_full_content)
+
+    service, source_id = await _make_source_product(session)
+    state = _make_state(1)
+    await state.set_state(CloneBatchStates.vendor_code_template)
+    await state.update_data(source_product_id=source_id, car_models=["Vesta", "Granta", "Priora"])
+
+    message = _FakeMessage(text="ART-{model}")
+    await clone_batch_template(message, state, service)
 
     assert await state.get_state() is None
     summary = message.answered[-1]
     assert "Создано черновиков: 3" in summary
-    assert "Vesta" in summary and "Granta" in summary and "Priora" in summary
+    assert "ART-VESTA" in summary
+    assert "ART-GRANTA" in summary
+    assert "ART-PRIORA" in summary
+
+
+@pytest.mark.asyncio
+async def test_clone_batch_template_skip_generates_fallback_sku(session, monkeypatch):
+    monkeypatch.setattr(AIContentService, "generate_full_content", _fake_full_content)
+
+    service, source_id = await _make_source_product(session)
+    state = _make_state(1)
+    await state.set_state(CloneBatchStates.vendor_code_template)
+    await state.update_data(source_product_id=source_id, car_models=["Vesta"])
+
+    callback = _FakeCallback("skip:clone_template")
+    await clone_batch_template_skip(callback, state, service)
+
+    assert await state.get_state() is None
+    summary = callback.message.answered[-1]
+    assert "Создано черновиков: 1" in summary
+    assert "ART-CLONE-" in summary
+
+
+def test_build_vendor_code_substitutes_model_uppercase_no_spaces():
+    assert _build_vendor_code("ART-{model}", "Lada Vesta", clone_id=1) == "ART-LADAVESTA"
+
+
+def test_build_vendor_code_appends_model_when_placeholder_missing():
+    assert _build_vendor_code("ART", "Granta", clone_id=1) == "ART-GRANTA"
+
+
+def test_build_vendor_code_fallback_when_no_template():
+    assert _build_vendor_code(None, "Granta", clone_id=42) == "ART-CLONE-42"
 
 
 @pytest.mark.asyncio
@@ -273,7 +378,7 @@ async def test_clone_batch_models_rejects_more_than_max(session):
     await state.update_data(source_product_id=source_id)
 
     message = _FakeMessage(text="Vesta, Granta, Priora, Niva, XRAY, Kalina")
-    await clone_batch_models(message, state, service)
+    await clone_batch_models(message, state)
 
     assert any("максимум" in t.lower() for t in message.answered)
     source = await service.get_product(source_id)
@@ -289,6 +394,6 @@ async def test_clone_batch_models_empty_input(session):
     await state.update_data(source_product_id=source_id)
 
     message = _FakeMessage(text="   ")
-    await clone_batch_models(message, state, service)
+    await clone_batch_models(message, state)
 
     assert any("Не нашёл ни одной модели" in t for t in message.answered)

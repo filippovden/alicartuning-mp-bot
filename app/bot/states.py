@@ -33,12 +33,14 @@ class CloneProductStates(StatesGroup):
     """Клонирование карточки под другую модель авто (одна деталь → разные Lada)."""
 
     car_model = State()
+    vendor_code = State()
 
 
 class CloneBatchStates(StatesGroup):
     """Пакетное клонирование карточки на несколько моделей за раз."""
 
     car_models = State()
+    vendor_code_template = State()
 
 
 class ReviewReplyStates(StatesGroup):

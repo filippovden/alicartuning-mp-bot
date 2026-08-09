@@ -105,12 +105,15 @@ class ProductService:
 
         Копирует категорию, бренд, материал, цвет, комплектацию, габариты,
         вес, цену (себестоимость/розничную — без неё клон нельзя опубликовать,
-        а деталь физически та же) и фото. НЕ копирует vendor_code/barcode
-        (должны быть уникальными на маркетплейсах — новый клон получает их
-        только через /edit), title/description (генерируются заново под новую
-        модель — см. generate_ai_content) и wb_nm_id/ozon_product_id (это
-        идентификаторы КОНКРЕТНОЙ опубликованной карточки-источника, у клона
-        их не может быть, пока он не опубликован сам)."""
+        а деталь физически та же), фото и заполненные характеристики категории
+        (Attribute — это тоже свойства детали, не карточки-источника, поэтому
+        переносятся как есть; variant_id не копируется, у клона нет вариаций
+        исходного товара). НЕ копирует vendor_code/barcode (должны быть
+        уникальными на маркетплейсах — новый клон получает их через диалог
+        клонирования/через /edit), title/description (генерируются заново под
+        новую модель — см. generate_ai_content) и wb_nm_id/ozon_product_id
+        (это идентификаторы КОНКРЕТНОЙ опубликованной карточки-источника, у
+        клона их не может быть, пока он не опубликован сам)."""
         source = await self.get_product(source_product_id)
         if source is None:
             raise ValueError(f"Товар {source_product_id} не найден")
@@ -136,6 +139,13 @@ class ProductService:
 
         for image in source.images:
             await self.add_image(clone.id, image.storage_file_id, image_type=image.image_type, position=image.position)
+
+        for attribute in source.attributes:
+            self.session.add(
+                Attribute(product_id=clone.id, category_attr_id=attribute.category_attr_id, value=attribute.value)
+            )
+        if source.attributes:
+            await self.session.commit()
 
         return await self.get_product(clone.id)
 

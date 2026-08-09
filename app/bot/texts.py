@@ -109,9 +109,12 @@ def publish_partial(wb_message: str | None, ozon_message: str | None) -> str:
 def clone_created(clone_id: int, source_id: int) -> str:
     return (
         f"✅ Черновик #{clone_id} создан на основе товара #{source_id} — категория, материал, "
-        "цвет, комплектация, габариты, вес, цена и фото скопированы. Артикул и штрихкод — "
-        "новые, укажите их через /edit перед публикацией."
+        "цвет, комплектация, габариты, вес, цена, характеристики и фото скопированы. "
+        "Дальше зададим новую модель и новый артикул."
     )
+
+
+ASK_CLONE_VENDOR_CODE = "Новый уникальный артикул (SKU) для клона:"
 
 
 def ask_batch_car_models(max_count: int) -> str:
@@ -122,11 +125,32 @@ def too_many_models(max_count: int, given: int) -> str:
     return f"⚠️ Указано моделей: {given}, максимум за раз — {max_count}. Сократите список и отправьте ещё раз."
 
 
+def ask_vendor_code_template() -> str:
+    return (
+        "Шаблон артикула для каждого клона (используйте {model} — подставится модель "
+        "в верхнем регистре без пробелов), например:\nART-{model}\n\n"
+        "Или нажмите «Пропустить» — сгенерирую артикул автоматически."
+    )
+
+
+def clone_draft_preview(product) -> str:
+    price_part = f"{float(product.price):.0f}₽" if product.price else "—"
+    cost_part = f" (себестоимость {float(product.cost_price):.0f}₽)" if product.cost_price else ""
+    return (
+        "📝 <b>Черновик карточки (клон):</b>\n\n"
+        f"<b>Артикул:</b> {product.vendor_code} / <b>Модель:</b> {product.car_model}\n\n"
+        f"<b>Название:</b> {product.title}\n\n"
+        f"<b>Описание:</b>\n{product.description}\n\n"
+        f"<b>Цена:</b> {price_part}{cost_part}\n\n"
+        "Проверьте данные выше. Если всё верно — нажмите «Опубликовать». "
+        "Если нужно исправить — «Редактировать»."
+    )
+
+
 def batch_clone_summary(products) -> str:
     lines = [f"✅ Создано черновиков: {len(products)}"]
     for product in products:
-        lines.append(f"• #{product.id} — {product.car_model}: {product.title}")
-    lines.append("\nПеред публикацией каждому нужен свой артикул — задайте через /edit <ID>.")
+        lines.append(f"• #{product.id} — артикул {product.vendor_code}, модель {product.car_model}: {product.title}")
     return "\n".join(lines)
 
 
