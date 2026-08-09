@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 
-from app.bot.handlers import admin, analytics, common, competitors, list_products, new_product, reviews
+from app.bot.handlers import admin, analytics, clone_product, common, competitors, list_products, new_product, reviews
 from app.bot.middlewares import AccessControlMiddleware, DbSessionMiddleware
 from app.config import settings
 
@@ -43,6 +43,7 @@ async def main() -> None:
     dp.include_router(analytics.router)
     dp.include_router(reviews.router)
     dp.include_router(list_products.router)
+    dp.include_router(clone_product.router)
 
     logger.info("Бот ALICARTUNING запущен, начинаю polling...")
     try:

@@ -29,5 +29,17 @@ class EditProductStates(StatesGroup):
     entering_value = State()
 
 
+class CloneProductStates(StatesGroup):
+    """Клонирование карточки под другую модель авто (одна деталь → разные Lada)."""
+
+    car_model = State()
+
+
+class CloneBatchStates(StatesGroup):
+    """Пакетное клонирование карточки на несколько моделей за раз."""
+
+    car_models = State()
+
+
 class ReviewReplyStates(StatesGroup):
     entering_reply = State()

@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from app.bot import texts
+from app.bot.keyboards import clone_from_list_kb
 from app.bot.states import EditProductStates
 
 router = Router(name="list_products")
@@ -17,6 +18,8 @@ EDITABLE_FIELDS = {
     "4": ("cost_price", "Себестоимость"),
     "5": ("color", "Цвет"),
     "6": ("material", "Материал"),
+    "7": ("vendor_code", "Артикул (SKU)"),
+    "8": ("barcode", "Штрихкод"),
 }
 
 
@@ -33,7 +36,7 @@ async def cmd_list(message: Message, product_service) -> None:
         return
 
     lines = [texts.product_list_item(p) for p in products]
-    await message.answer("\n".join(lines))
+    await message.answer("\n".join(lines), reply_markup=clone_from_list_kb([p.id for p in products]))
 
 
 @router.message(Command("status"))

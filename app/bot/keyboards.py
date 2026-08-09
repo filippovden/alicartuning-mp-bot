@@ -8,8 +8,26 @@ def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
     builder.button(text="🖼 Обработать фото (убрать фон)", callback_data=f"processimg:{product_id}")
     builder.button(text="🎨 Сгенерировать инфографику", callback_data=f"gengraphic:{product_id}")
     builder.button(text="🔍 Анализ конкурентов", callback_data=f"competitors:{product_id}")
+    builder.button(text="🧬 Создать похожую (другая модель)", callback_data=f"clone:{product_id}")
+    builder.button(text="📦 Сделать для нескольких моделей", callback_data=f"clonebatch:{product_id}")
     builder.button(text="✏️ Редактировать", callback_data=f"edit:{product_id}")
     builder.button(text="🗑 Отмена", callback_data=f"cancel:{product_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def clone_from_list_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for product_id in product_ids:
+        builder.button(text=f"🧬 Похожая #{product_id}", callback_data=f"clone:{product_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def publish_links_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for product_id in product_ids:
+        builder.button(text=f"🚀 Опубликовать #{product_id}", callback_data=f"publish:{product_id}")
     builder.adjust(1)
     return builder.as_markup()
 

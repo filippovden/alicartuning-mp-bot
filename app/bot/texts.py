@@ -6,6 +6,7 @@ WELCOME = (
     "Команды:\n"
     "/new — создать новый товар\n"
     "/list — мои товары и черновики\n"
+    "/clone <ID> — клонировать товар под другую модель авто\n"
     "/status — статус публикации\n"
     "/edit <ID> — редактировать товар\n"
     "/competitors <запрос> — анализ конкурентов на Wildberries\n"
@@ -102,6 +103,30 @@ def publish_partial(wb_message: str | None, ozon_message: str | None) -> str:
         lines.append(f"• Wildberries: {wb_message}")
     if ozon_message:
         lines.append(f"• Ozon: {ozon_message}")
+    return "\n".join(lines)
+
+
+def clone_created(clone_id: int, source_id: int) -> str:
+    return (
+        f"✅ Черновик #{clone_id} создан на основе товара #{source_id} — категория, материал, "
+        "цвет, комплектация, габариты, вес, цена и фото скопированы. Артикул и штрихкод — "
+        "новые, укажите их через /edit перед публикацией."
+    )
+
+
+def ask_batch_car_models(max_count: int) -> str:
+    return f"Введите модели авто через запятую (максимум {max_count}), например:\nVesta, Granta, Priora"
+
+
+def too_many_models(max_count: int, given: int) -> str:
+    return f"⚠️ Указано моделей: {given}, максимум за раз — {max_count}. Сократите список и отправьте ещё раз."
+
+
+def batch_clone_summary(products) -> str:
+    lines = [f"✅ Создано черновиков: {len(products)}"]
+    for product in products:
+        lines.append(f"• #{product.id} — {product.car_model}: {product.title}")
+    lines.append("\nПеред публикацией каждому нужен свой артикул — задайте через /edit <ID>.")
     return "\n".join(lines)
 
 

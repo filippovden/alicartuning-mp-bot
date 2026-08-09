@@ -98,6 +98,47 @@ class ProductService:
         await self.session.refresh(product)
         return product
 
+    async def clone_product(self, source_product_id: int) -> Product:
+        """Клонирует карточку под другую модель авто — одна деталь автотюнинга
+        часто подходит сразу нескольким моделям Lada, и проще размножить
+        карточку, чем заполнять её заново.
+
+        Копирует категорию, бренд, материал, цвет, комплектацию, габариты,
+        вес, цену (себестоимость/розничную — без неё клон нельзя опубликовать,
+        а деталь физически та же) и фото. НЕ копирует vendor_code/barcode
+        (должны быть уникальными на маркетплейсах — новый клон получает их
+        только через /edit), title/description (генерируются заново под новую
+        модель — см. generate_ai_content) и wb_nm_id/ozon_product_id (это
+        идентификаторы КОНКРЕТНОЙ опубликованной карточки-источника, у клона
+        их не может быть, пока он не опубликован сам)."""
+        source = await self.get_product(source_product_id)
+        if source is None:
+            raise ValueError(f"Товар {source_product_id} не найден")
+
+        clone = Product(
+            user_id=source.user_id,
+            status=ProductStatus.DRAFT,
+            category_id=source.category_id,
+            brand=source.brand,
+            material=source.material,
+            color=source.color,
+            package_contents=source.package_contents,
+            cost_price=source.cost_price,
+            price=source.price,
+            weight_g=source.weight_g,
+            length_mm=source.length_mm,
+            width_mm=source.width_mm,
+            height_mm=source.height_mm,
+        )
+        self.session.add(clone)
+        await self.session.commit()
+        await self.session.refresh(clone)
+
+        for image in source.images:
+            await self.add_image(clone.id, image.storage_file_id, image_type=image.image_type, position=image.position)
+
+        return await self.get_product(clone.id)
+
     # --- Категории и характеристики ------------------------------------
 
     async def get_or_fetch_category(
