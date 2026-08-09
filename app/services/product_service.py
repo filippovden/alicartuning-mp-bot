@@ -38,6 +38,10 @@ PRODUCT_LOAD_OPTIONS = (
     selectinload(Product.attributes).selectinload(Attribute.category_attr),
     selectinload(Product.images).selectinload(Image.storage_file),
     selectinload(Product.variants),
+    # cmd_status (app/bot/handlers/list_products.py) читает product.publish_logs
+    # синхронно — без eager load это ленивая подгрузка вне await-контекста
+    # (MissingGreenlet) на async-сессии, а не просто "None по умолчанию".
+    selectinload(Product.publish_logs),
 )
 
 
