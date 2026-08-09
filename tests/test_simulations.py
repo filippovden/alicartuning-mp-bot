@@ -217,9 +217,6 @@ async def test_full_bot_dialog_simulations(session, monkeypatch):
             msg = _FakeMessage(f"ALICARTUNING / Товар для симуляции #{i}", user)
             await new_product.step_title(msg, state, service)
 
-            msg = _FakeMessage("ALICARTUNING", user)
-            await new_product.step_brand(msg, state, service)
-
             msg = _FakeMessage(f"SIM-BOT-{i}", user)
             await new_product.step_vendor_code(msg, state, service)
 

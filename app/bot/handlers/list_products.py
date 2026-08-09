@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from aiogram import Router
+import logging
+
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import clone_from_list_kb
+from app.bot.handlers.new_product import resume_state_for_product
+from app.bot.keyboards import confirm_publish_kb, drafts_kb, product_actions_kb
 from app.bot.states import EditProductStates
+from app.db.models import ProductStatus
 
+logger = logging.getLogger(__name__)
 router = Router(name="list_products")
 
 EDITABLE_FIELDS = {
@@ -20,6 +25,7 @@ EDITABLE_FIELDS = {
     "6": ("material", "Материал"),
     "7": ("vendor_code", "Артикул (SKU)"),
     "8": ("barcode", "Штрихкод"),
+    "9": ("brand", "Бренд"),
 }
 
 
@@ -32,11 +38,65 @@ async def cmd_list(message: Message, product_service) -> None:
     )
     products = await product_service.list_products(user.id)
     if not products:
-        await message.answer("У вас пока нет товаров. Введите /new, чтобы создать первый.")
+        await message.answer("У вас пока нет товаров. Нажмите «📦 Новый товар», чтобы создать первый.")
         return
 
     lines = [texts.product_list_item(p) for p in products]
-    await message.answer("\n".join(lines), reply_markup=clone_from_list_kb([p.id for p in products]))
+    await message.answer("\n".join(lines), reply_markup=product_actions_kb([p.id for p in products]))
+
+
+@router.message(Command("drafts"))
+async def cmd_drafts(message: Message, product_service) -> None:
+    """Незаконченные черновики (status=draft) с кнопкой «Продолжить» — раздел C.5
+    ТЗ: раньше недописанный товар было легко забросить без единого способа
+    вернуться к нему без ручного /edit."""
+    user = await product_service.get_or_create_user(
+        telegram_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+    )
+    drafts = await product_service.list_products(user.id, status=ProductStatus.DRAFT)
+    if not drafts:
+        await message.answer(texts.NO_DRAFTS)
+        return
+
+    lines = [texts.draft_list_item(p) for p in drafts]
+    await message.answer("\n".join(lines), reply_markup=drafts_kb([p.id for p in drafts]))
+
+
+@router.callback_query(F.data.startswith("continuedraft:"))
+async def continue_draft(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    product = await product_service.get_product(product_id)
+    await callback.answer()
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    next_state, question = await resume_state_for_product(product)
+    await state.update_data(
+        product_id=product.id,
+        photos=[img.storage_file_id for img in product.images],
+        pending_attrs=[],
+    )
+
+    if next_state is None:
+        await state.clear()
+        await callback.message.answer(texts.generating_preview())
+        updated = await product_service.generate_ai_content(product.id)
+        await callback.message.answer(
+            texts.draft_preview(
+                updated.title,
+                updated.description,
+                float(updated.price) if updated.price else None,
+                float(updated.cost_price) if updated.cost_price else None,
+            ),
+            reply_markup=confirm_publish_kb(updated.id),
+        )
+        return
+
+    await state.set_state(next_state)
+    await callback.message.answer(question)
 
 
 @router.message(Command("status"))

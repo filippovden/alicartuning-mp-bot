@@ -3,8 +3,10 @@
 WELCOME = (
     "👋 Привет! Я AI-менеджер маркетплейсов ALICARTUNING.\n\n"
     "Помогу быстро создать карточку товара и опубликовать её на Wildberries и Ozon.\n\n"
-    "Команды:\n"
+    "Меню снизу — основной способ пользоваться ботом. Команды — для тех, кто "
+    "предпочитает печатать:\n"
     "/new — создать новый товар\n"
+    "/drafts — незаконченные черновики\n"
     "/list — мои товары и черновики\n"
     "/clone <ID> — клонировать товар под другую модель авто\n"
     "/status — статус публикации\n"
@@ -17,9 +19,28 @@ WELCOME = (
     "/cancel — отменить текущий диалог"
 )
 
+MORE_MENU = (
+    "⚙️ Ещё команды:\n\n"
+    "/status <ID> — статус публикации товара\n"
+    "/edit <ID> — изменить поле товара\n"
+    "/competitors <запрос> — анализ конкурентов на Wildberries\n"
+    "/synccategories — (админ) обновить справочник категорий Ozon\n"
+    "/cancel — отменить текущий диалог"
+)
+
+NEW_PRODUCT_CHOOSE_MODE = "Как создаём карточку?"
+
+STEP_TOTAL = 13
+
+
+def step(n: int, label: str) -> str:
+    """Прогресс в пошаговом диалоге /new — чтобы было видно, сколько ещё осталось
+    (раздел C ТЗ: длинная анкета без ориентиров отпугивает)."""
+    return f"Шаг {n}/{STEP_TOTAL} · {label}\n\n"
+
+
 ASK_CATEGORY = "Создаём новый товар.\n\nВведите категорию товара (например, «Тюнинг салона» или «Карман обивки дверей»):"
-ASK_TITLE = "Укажите точное название товара (коротко, как на WB):"
-ASK_BRAND = f"Бренд товара (без ИП/ООО):"
+ASK_TITLE = "Черновое название (можно коротко, AI потом улучшит):"
 ASK_VENDOR_CODE = "Артикул в вашем магазине (SKU):"
 ASK_COST_PRICE = "Себестоимость (руб. без НДС):"
 ASK_PRICE = "Розничная цена (руб.):"
@@ -46,6 +67,7 @@ def need_more_photos(current: int, minimum: int = MIN_PRODUCT_PHOTOS) -> str:
         f"⚠️ Загружено фото: {current}, нужно минимум {minimum}. "
         f"Добавьте ещё {missing} фото, прежде чем нажать «Готово»."
     )
+
 
 CANCELLED = "Диалог отменён. Введите /new, чтобы начать заново."
 NOT_FOUND = "Товар не найден."
@@ -138,10 +160,10 @@ def clone_draft_preview(product) -> str:
     cost_part = f" (себестоимость {float(product.cost_price):.0f}₽)" if product.cost_price else ""
     return (
         "📝 <b>Черновик карточки (клон):</b>\n\n"
-        f"<b>Артикул:</b> {product.vendor_code} / <b>Модель:</b> {product.car_model}\n\n"
+        f"<b>Модель:</b> {product.car_model} | <b>Артикул:</b> {product.vendor_code} | "
+        f"<b>Цена:</b> {price_part}{cost_part}\n\n"
         f"<b>Название:</b> {product.title}\n\n"
         f"<b>Описание:</b>\n{product.description}\n\n"
-        f"<b>Цена:</b> {price_part}{cost_part}\n\n"
         "Проверьте данные выше. Если всё верно — нажмите «Опубликовать». "
         "Если нужно исправить — «Редактировать»."
     )
@@ -151,6 +173,82 @@ def batch_clone_summary(products) -> str:
     lines = [f"✅ Создано черновиков: {len(products)}"]
     for product in products:
         lines.append(f"• #{product.id} — артикул {product.vendor_code}, модель {product.car_model}: {product.title}")
+    return "\n".join(lines)
+
+
+QUICK_ASK_PHOTOS = (
+    f"⚡ Быстрое создание.\n\nПришлите от {MIN_PRODUCT_PHOTOS} фото товара, затем нажмите «Готово»."
+)
+QUICK_ASK_DESCRIPTION = (
+    "Теперь одним сообщением опишите товар: тип детали, модель Lada, материал, "
+    "цвет, цену — как удобно, я разберу текст сам.\n\n"
+    "Пример: «Накладки зеркал BMW-стиль, Lada Granta, ABS, чёрный глянец, цена 990»"
+)
+QUICK_PARSING = "🤖 Разбираю описание..."
+QUICK_PARSE_FAILED = (
+    "⚠️ Не смог разобрать описание — попробуйте переформулировать короче, "
+    "в одном сообщении, например: «Накладки зеркал, Lada Vesta, ABS-пластик, чёрный, 990₽»."
+)
+
+
+def quick_ask_vendor_code(car_model: str) -> str:
+    return f"Модель определена как «{car_model}». Теперь новый уникальный артикул (SKU):"
+
+
+ASK_QUICK_DIMENSIONS = "Размеры в упаковке не удалось определить из текста — укажите (длина×ширина×высота, мм). Пример: 500x200x50:"
+ASK_QUICK_WEIGHT = "Вес в упаковке не удалось определить из текста — укажите (грамм):"
+
+
+def quick_checklist(product, missing: list[str]) -> str:
+    """Чеклист готовности карточки в быстром режиме — видно, что уже есть, а чего не хватает."""
+    lines = ["📝 <b>Черновик готов, проверьте:</b>\n"]
+    lines.append(f"✅ Название: {product.title}")
+    lines.append("✅ Описание" if product.description else "⚠️ Нет описания")
+    photos_count = len(product.images)
+    lines.append(f"✅ Фото ({photos_count})" if photos_count >= MIN_PRODUCT_PHOTOS else f"⚠️ Мало фото ({photos_count})")
+    for field_label in missing:
+        lines.append(f"⚠️ Нет: {field_label}")
+    if not missing:
+        lines.append("✅ Всё заполнено — можно публиковать")
+    return "\n".join(lines)
+
+
+def draft_list_item(product) -> str:
+    parts = [f"📝 #{product.id}"]
+    if product.title:
+        parts.append(product.title)
+    if product.car_model:
+        parts.append(f"({product.car_model})")
+    return " ".join(parts)
+
+
+NO_DRAFTS = "Незаконченных черновиков нет. Нажмите «📦 Новый товар», чтобы начать."
+
+
+def price_check_report(report, pricing: dict | None) -> str:
+    if not report.items:
+        return f"По запросу «{report.query}» конкурентов на Wildberries не нашлось — сравнить цену не с чем."
+
+    lines = [f"💰 <b>Цена по рынку</b> (запрос «{report.query}»)"]
+    lines.append(
+        f"Конкуренты: мин {report.min_price:.0f}₽ / средняя {report.average_price:.0f}₽ / макс {report.max_price:.0f}₽"
+    )
+    if pricing and pricing.get("recommended_price"):
+        lines.append(f"\nРекомендованная цена: {pricing['recommended_price']:.0f}₽")
+        if pricing.get("note"):
+            lines.append(f"⚠️ {pricing['note']}")
+    return "\n".join(lines)
+
+
+def price_set(product_id: int, price: float) -> str:
+    return f"✅ Цена товара #{product_id} обновлена: {price:.0f}₽"
+
+
+def publish_all_summary(results: list[tuple[int, bool, str]]) -> str:
+    lines = ["📦 <b>Публикация всех черновиков завершена:</b>"]
+    for product_id, ok, note in results:
+        emoji = "✅" if ok else "⚠️"
+        lines.append(f"{emoji} #{product_id}: {note}")
     return "\n".join(lines)
 
 

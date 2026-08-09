@@ -27,6 +27,10 @@ celery_app.conf.beat_schedule = {
         "task": "snapshot_competitor_prices",
         "schedule": 24 * 60 * 60,  # тайминг-аналитика требует ежедневной истории цен
     },
+    "check-wb-card-status": {
+        "task": "check_wb_card_status",
+        "schedule": 45 * 60,  # раздел E.2 ТЗ: раз в 30-60 минут, best-effort (см. ProductService.check_wb_card_status)
+    },
 }
 
 
@@ -191,5 +195,49 @@ def snapshot_competitor_prices_task() -> dict:
                 await bot.session.close()
 
             return {"products_checked": len(products), "snapshots_taken": len(snapshotted), "trend_alerts": len(alerts)}
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="check_wb_card_status")
+def check_wb_card_status_task() -> dict:
+    """Периодическая best-effort проверка статуса опубликованных карточек WB
+    (раздел E.2 ТЗ) — см. ProductService.check_wb_card_status про то, почему
+    это заготовка, а не полноценная модерация с причинами отклонения."""
+    import asyncio
+
+    from aiogram import Bot
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.db.models import Product
+    from app.db.session import async_session_factory
+    from app.services.product_service import ProductService
+
+    async def _run() -> dict:
+        async with async_session_factory() as session:
+            service = ProductService(session)
+            stmt = select(Product).where(Product.wb_nm_id.is_not(None))
+            products = list((await session.execute(stmt)).scalars().all())
+
+            notices = []
+            for product in products:
+                notice = await service.check_wb_card_status(product)
+                if notice:
+                    notices.append(notice)
+
+            if notices and settings.telegram_bot_token and settings.telegram_admin_id_list:
+                bot = Bot(token=settings.telegram_bot_token)
+                text = "🔎 <b>Статус карточек WB изменился:</b>\n" + "\n".join(f"• {n}" for n in notices)
+                for admin_id in settings.telegram_admin_id_list:
+                    try:
+                        await bot.send_message(admin_id, text)
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "Не удалось отправить уведомление о статусе WB админу %s", admin_id, exc_info=True
+                        )
+                await bot.session.close()
+
+            return {"products_checked": len(products), "status_changes": len(notices)}
 
     return asyncio.run(_run())

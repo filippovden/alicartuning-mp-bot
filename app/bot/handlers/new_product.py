@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from io import BytesIO
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -19,6 +20,7 @@ from app.services.category_search import (
 )
 from app.services.marketplaces.base import MarketplaceAPIError
 from app.services.storage import save_bytes
+from app.services.validation import check_image_dimensions
 
 logger = logging.getLogger(__name__)
 router = Router(name="new_product")
@@ -33,17 +35,50 @@ def _parse_float(text: str) -> float | None:
         return None
 
 
+def _photo_size_warning(image_bytes: bytes) -> str | None:
+    """Проверяет фото сразу при загрузке (раздел C.4 ТЗ) — раньше маленькое фото
+    всплывало только на этапе публикации, когда переснимать уже неудобно.
+    Переиспользует пороги WB/Ozon из app.services.validation, а не заводит
+    отдельное магическое число."""
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception:
+        logger.warning("Не удалось прочитать размеры фото", exc_info=True)
+        return None
+
+    issues = check_image_dimensions(width, height)
+    if not issues:
+        return None
+    return "\n".join(str(issue) for issue in issues)
+
+
 @router.message(Command("new"))
 async def cmd_new(message: Message, state: FSMContext, product_service) -> None:
-    user = await product_service.get_or_create_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
+    await start_step_by_step(
+        state, product_service, message.answer,
+        telegram_id=message.from_user.id, username=message.from_user.username, full_name=message.from_user.full_name,
     )
+
+
+@router.callback_query(F.data == "newmode:step")
+async def start_step_by_step_callback(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    await callback.answer()
+    await start_step_by_step(
+        state, product_service, callback.message.answer,
+        telegram_id=callback.from_user.id, username=callback.from_user.username, full_name=callback.from_user.full_name,
+    )
+
+
+async def start_step_by_step(state: FSMContext, product_service, answer, *, telegram_id: int, username: str | None, full_name: str | None) -> None:
+    user = await product_service.get_or_create_user(telegram_id=telegram_id, username=username, full_name=full_name)
     product = await product_service.create_draft(user.id)
+    await product_service.update_fields(product.id, brand=settings.brand_name)
     await state.set_state(NewProductStates.category)
     await state.update_data(product_id=product.id, photos=[], pending_attrs=[])
-    await message.answer(texts.ASK_CATEGORY)
+    await answer(texts.step(1, "Категория") + texts.ASK_CATEGORY)
 
 
 @router.message(NewProductStates.category)
@@ -150,23 +185,15 @@ async def _finish_category_pick(
     await product_service.update_fields(data["product_id"], category_id=category.id)
 
     await state.set_state(NewProductStates.title)
-    await message.answer(texts.ASK_TITLE)
+    await message.answer(texts.step(2, "Название") + texts.ASK_TITLE)
 
 
 @router.message(NewProductStates.title)
 async def step_title(message: Message, state: FSMContext, product_service) -> None:
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], title=message.text.strip())
-    await state.set_state(NewProductStates.brand)
-    await message.answer(texts.ASK_BRAND)
-
-
-@router.message(NewProductStates.brand)
-async def step_brand(message: Message, state: FSMContext, product_service) -> None:
-    data = await state.get_data()
-    await product_service.update_fields(data["product_id"], brand=message.text.strip())
     await state.set_state(NewProductStates.vendor_code)
-    await message.answer(texts.ASK_VENDOR_CODE)
+    await message.answer(texts.step(3, "Артикул") + texts.ASK_VENDOR_CODE)
 
 
 @router.message(NewProductStates.vendor_code)
@@ -174,7 +201,7 @@ async def step_vendor_code(message: Message, state: FSMContext, product_service)
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], vendor_code=message.text.strip())
     await state.set_state(NewProductStates.cost_price)
-    await message.answer(texts.ASK_COST_PRICE)
+    await message.answer(texts.step(4, "Себестоимость") + texts.ASK_COST_PRICE)
 
 
 @router.message(NewProductStates.cost_price)
@@ -186,7 +213,7 @@ async def step_cost_price(message: Message, state: FSMContext, product_service) 
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], cost_price=value)
     await state.set_state(NewProductStates.price)
-    await message.answer(texts.ASK_PRICE)
+    await message.answer(texts.step(5, "Цена") + texts.ASK_PRICE)
 
 
 @router.message(NewProductStates.price)
@@ -198,13 +225,13 @@ async def step_price(message: Message, state: FSMContext, product_service) -> No
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], price=value)
     await state.set_state(NewProductStates.barcode)
-    await message.answer(texts.ASK_BARCODE, reply_markup=skip_kb("barcode"))
+    await message.answer(texts.step(6, "Штрихкод") + texts.ASK_BARCODE, reply_markup=skip_kb("barcode"))
 
 
 @router.callback_query(F.data == "skip:barcode")
 async def skip_barcode(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(NewProductStates.package_contents)
-    await callback.message.answer(texts.ASK_PACKAGE_CONTENTS)
+    await callback.message.answer(texts.step(7, "Комплектация") + texts.ASK_PACKAGE_CONTENTS)
     await callback.answer()
 
 
@@ -213,7 +240,7 @@ async def step_barcode(message: Message, state: FSMContext, product_service) -> 
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], barcode=message.text.strip())
     await state.set_state(NewProductStates.package_contents)
-    await message.answer(texts.ASK_PACKAGE_CONTENTS)
+    await message.answer(texts.step(7, "Комплектация") + texts.ASK_PACKAGE_CONTENTS)
 
 
 @router.message(NewProductStates.package_contents)
@@ -221,7 +248,7 @@ async def step_package_contents(message: Message, state: FSMContext, product_ser
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], package_contents=message.text.strip())
     await state.set_state(NewProductStates.material)
-    await message.answer(texts.ASK_MATERIAL)
+    await message.answer(texts.step(8, "Материал") + texts.ASK_MATERIAL)
 
 
 @router.message(NewProductStates.material)
@@ -229,7 +256,7 @@ async def step_material(message: Message, state: FSMContext, product_service) ->
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], material=message.text.strip())
     await state.set_state(NewProductStates.color)
-    await message.answer(texts.ASK_COLOR)
+    await message.answer(texts.step(9, "Цвет") + texts.ASK_COLOR)
 
 
 @router.message(NewProductStates.color)
@@ -237,7 +264,7 @@ async def step_color(message: Message, state: FSMContext, product_service) -> No
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], color=message.text.strip())
     await state.set_state(NewProductStates.car_model)
-    await message.answer(texts.ASK_CAR_MODEL)
+    await message.answer(texts.step(10, "Модель авто") + texts.ASK_CAR_MODEL)
 
 
 @router.message(NewProductStates.car_model)
@@ -245,7 +272,7 @@ async def step_car_model(message: Message, state: FSMContext, product_service) -
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], car_model=message.text.strip())
     await state.set_state(NewProductStates.dimensions)
-    await message.answer(texts.ASK_DIMENSIONS)
+    await message.answer(texts.step(11, "Размеры") + texts.ASK_DIMENSIONS)
 
 
 @router.message(NewProductStates.dimensions)
@@ -258,7 +285,7 @@ async def step_dimensions(message: Message, state: FSMContext, product_service) 
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], length_mm=length, width_mm=width, height_mm=height)
     await state.set_state(NewProductStates.weight)
-    await message.answer(texts.ASK_WEIGHT)
+    await message.answer(texts.step(12, "Вес") + texts.ASK_WEIGHT)
 
 
 @router.message(NewProductStates.weight)
@@ -271,7 +298,7 @@ async def step_weight(message: Message, state: FSMContext, product_service) -> N
     data = await state.get_data()
     await product_service.update_fields(data["product_id"], weight_g=weight)
     await state.set_state(NewProductStates.photos)
-    await message.answer(texts.ASK_PHOTOS, reply_markup=photos_done_kb())
+    await message.answer(texts.step(13, "Фото") + texts.ASK_PHOTOS, reply_markup=photos_done_kb())
 
 
 @router.message(NewProductStates.photos, F.photo)
@@ -280,11 +307,16 @@ async def step_photo(message: Message, state: FSMContext, product_service, sessi
     photo = message.photo[-1]
     file = await message.bot.get_file(photo.file_id)
     buffer = await message.bot.download_file(file.file_path)
-    storage_file = await save_bytes(session, buffer.read(), filename=file.file_path, content_type="image/jpeg")
+    content = buffer.read()
+    storage_file = await save_bytes(session, content, filename=file.file_path, content_type="image/jpeg")
     await product_service.add_image(data["product_id"], storage_file.id, image_type="main", position=len(data["photos"]))
 
     photos = data["photos"] + [storage_file.id]
     await state.update_data(photos=photos)
+
+    size_warning = _photo_size_warning(content)
+    if size_warning:
+        await message.answer(size_warning)
     await message.answer(texts.PHOTO_RECEIVED.format(count=len(photos)), reply_markup=photos_done_kb())
 
 
@@ -444,6 +476,47 @@ async def confirm_publish(callback: CallbackQuery, state: FSMContext, product_se
     await state.clear()
 
 
+async def _publish_one(product_service, product_id: int) -> tuple[bool, str]:
+    """Публикует один товар и возвращает короткий человекочитаемый итог — общая
+    логика для одиночной и пакетной («Опубликовать все») публикации."""
+    validation = await product_service.validate(product_id)
+    if not validation.is_valid:
+        return False, "не прошёл проверку — " + "; ".join(i.message for i in validation.errors())
+
+    try:
+        summary = await product_service.publish(product_id)
+    except ValueError as exc:
+        return False, str(exc)
+
+    if summary.all_succeeded:
+        parts = []
+        if summary.wb and summary.wb.external_id:
+            parts.append(f"WB nmID {summary.wb.external_id}")
+        if summary.ozon and summary.ozon.external_id:
+            parts.append(f"Ozon {summary.ozon.external_id}")
+        return True, ", ".join(parts) or "опубликован"
+
+    notes = [m for m in (summary.wb.message if summary.wb else None, summary.ozon.message if summary.ozon else None) if m]
+    return False, "частично — " + "; ".join(notes)
+
+
+@router.callback_query(F.data.startswith("publishall:"))
+async def publish_all(callback: CallbackQuery, product_service) -> None:
+    """«Опубликовать все» после пакетного клонирования (раздел D ТЗ) — публикует
+    черновики последовательно и присылает один отчёт по каждому, вместо того
+    чтобы нажимать «Опубликовать» на каждую карточку по отдельности."""
+    product_ids = [int(pid) for pid in callback.data.split(":", 1)[1].split(",") if pid]
+    await callback.answer()
+    await callback.message.answer(f"⏳ Публикую {len(product_ids)} товар(ов)...")
+
+    results = []
+    for product_id in product_ids:
+        ok, note = await _publish_one(product_service, product_id)
+        results.append((product_id, ok, note))
+
+    await callback.message.answer(texts.publish_all_summary(results))
+
+
 @router.callback_query(F.data.startswith("edit:"))
 async def edit_from_preview(callback: CallbackQuery) -> None:
     product_id = callback.data.split(":")[1]
@@ -456,3 +529,37 @@ async def cancel_from_preview(callback: CallbackQuery, state: FSMContext) -> Non
     await state.clear()
     await callback.answer()
     await callback.message.answer(texts.CANCELLED)
+
+
+# --- Возобновление черновика (/drafts, раздел C.5 ТЗ) -----------------------
+
+
+async def resume_state_for_product(product) -> tuple[object | None, str]:
+    """Определяет, с какого шага диалога /new продолжить недозаполненный черновик,
+    и текст вопроса для этого шага. Возвращает (None, "") если все обязательные
+    поля уже заполнены — тогда черновик можно сразу отправить на генерацию превью."""
+    if product.category_id is None:
+        return NewProductStates.category, texts.step(1, "Категория") + texts.ASK_CATEGORY
+    if not product.title:
+        return NewProductStates.title, texts.step(2, "Название") + texts.ASK_TITLE
+    if not product.vendor_code:
+        return NewProductStates.vendor_code, texts.step(3, "Артикул") + texts.ASK_VENDOR_CODE
+    if product.cost_price is None:
+        return NewProductStates.cost_price, texts.step(4, "Себестоимость") + texts.ASK_COST_PRICE
+    if product.price is None:
+        return NewProductStates.price, texts.step(5, "Цена") + texts.ASK_PRICE
+    if not product.package_contents:
+        return NewProductStates.package_contents, texts.step(7, "Комплектация") + texts.ASK_PACKAGE_CONTENTS
+    if not product.material:
+        return NewProductStates.material, texts.step(8, "Материал") + texts.ASK_MATERIAL
+    if not product.color:
+        return NewProductStates.color, texts.step(9, "Цвет") + texts.ASK_COLOR
+    if not product.car_model:
+        return NewProductStates.car_model, texts.step(10, "Модель авто") + texts.ASK_CAR_MODEL
+    if not (product.length_mm and product.width_mm and product.height_mm):
+        return NewProductStates.dimensions, texts.step(11, "Размеры") + texts.ASK_DIMENSIONS
+    if not product.weight_g:
+        return NewProductStates.weight, texts.step(12, "Вес") + texts.ASK_WEIGHT
+    if len(product.images) < texts.MIN_PRODUCT_PHOTOS:
+        return NewProductStates.photos, texts.step(13, "Фото") + texts.ASK_PHOTOS
+    return None, ""

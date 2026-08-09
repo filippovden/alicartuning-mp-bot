@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
@@ -105,6 +107,27 @@ class AIContentService:
             review_text=review_text,
         )
         return await self._complete(self._system(), prompt, max_tokens=300)
+
+    async def parse_quick_description(self, text: str) -> dict[str, str | float | None]:
+        """Быстрое создание товара (раздел B ТЗ): извлекает структурированные поля
+        из одного свободного сообщения продавца, чтобы не задавать вопрос за
+        вопросом. Бросает AIContentGenerationError, если ответ — не валидный JSON,
+        а не молча возвращает пустые поля, — вызывающий код должен явно попросить
+        пользователя переформулировать, а не тихо продолжить с пустой карточкой."""
+        prompt = prompts.QUICK_PARSE_PROMPT.format(text=text)
+        raw = await self._complete(self._system(), prompt, max_tokens=400)
+
+        # Модель иногда оборачивает JSON в ```json ... ``` несмотря на инструкцию —
+        # снимаем обёртку перед парсингом, а не считаем это ошибкой формата.
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise AIContentGenerationError(f"Не удалось разобрать ответ AI как JSON: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise AIContentGenerationError("Ответ AI не является JSON-объектом")
+        return data
 
     async def generate_full_content(self, draft: ProductDraft) -> dict[str, str | list[str]]:
         title = await self.generate_title(draft)

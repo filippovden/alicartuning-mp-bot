@@ -607,6 +607,65 @@ class ProductService:
         await self.session.commit()
         return log
 
+    # --- Статус модерации WB (заготовка, раздел E.2 ТЗ) -------------------
+
+    async def check_wb_card_status(self, product: Product) -> str | None:
+        """Best-effort проверка, видна ли уже опубликованная карточка WB в каталоге.
+
+        WB Content API не отдаёт отдельного поля «на модерации / одобрено /
+        отклонено» в общедоступном /get/cards/list — это лишь эвристика:
+        карточка с загруженными фото (mediaFiles) в ответе API считается прошедшей
+        размещение. Полноценная проверка причин отклонения потребовала бы
+        отдельного эндпоинта WB, непроверенного в этом проекте вживую — заготовка
+        под него оставлена явно, а не выдаётся за готовую функциональность.
+
+        Возвращает человекочитаемое уведомление только если статус изменился с
+        прошлой проверки (чтобы не слать один и тот же дайджест каждый запуск),
+        иначе None.
+        """
+        if not product.wb_nm_id or not product.vendor_code:
+            return None
+
+        client = WildberriesClient()
+        try:
+            cards = await client.get_cards_list(vendor_codes=[product.vendor_code])
+        except MarketplaceAPIError:
+            logger.warning("Не удалось проверить статус карточки WB для товара %s", product.id, exc_info=True)
+            return None
+
+        card = next((c for c in cards if c.get("vendorCode") == product.vendor_code), None)
+        now_visible = bool(card and card.get("mediaFiles"))
+
+        stmt = (
+            select(PublishLog)
+            .where(
+                PublishLog.product_id == product.id,
+                PublishLog.marketplace == Marketplace.WB,
+                PublishLog.message.like("Модерация WB:%"),
+            )
+            .order_by(PublishLog.created_at.desc())
+            .limit(1)
+        )
+        last = (await self.session.execute(stmt)).scalar_one_or_none()
+        was_visible = bool(last and "видна в каталоге" in last.message)
+
+        if last is not None and now_visible == was_visible:
+            return None
+
+        message = (
+            f"Модерация WB: карточка {product.vendor_code} видна в каталоге"
+            if now_visible
+            else f"Модерация WB: карточка {product.vendor_code} пока не видна в каталоге "
+            "(фото не подтянулись или карточка ещё на проверке)"
+        )
+        await self._save_publish_log(
+            product,
+            Marketplace.WB,
+            PublishStatus.SUCCESS if now_visible else PublishStatus.PARTIAL,
+            message=message,
+        )
+        return message
+
     # --- BotDialog (черновик диалога) ------------------------------------
 
     async def get_or_create_dialog(self, user_id: int) -> BotDialog:

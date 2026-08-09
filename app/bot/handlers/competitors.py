@@ -6,6 +6,8 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
+from app.bot import texts
+from app.bot.keyboards import price_suggestion_kb
 from app.config import settings
 from app.services.competitor_analysis import CompetitorAnalysisError, search_wb_competitors, suggest_pricing
 
@@ -85,3 +87,51 @@ async def callback_competitors(callback: CallbackQuery, product_service) -> None
 
     cost_price = float(product.cost_price) if product.cost_price else None
     await callback.message.answer(_format_report(report, cost_price=cost_price))
+
+
+@router.callback_query(F.data.startswith("pricecheck:"))
+async def price_check(callback: CallbackQuery, product_service) -> None:
+    """«Цена по рынку» в превью (раздел F ТЗ) — быстрый взгляд на мин/среднюю/макс
+    цену конкурентов с готовым предложением поставить рекомендованную цену в один клик."""
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer("Проверяю цены конкурентов...")
+
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    query = product.car_model or product.title or (product.category.name if product.category else "")
+    if not query:
+        await callback.message.answer("Недостаточно данных для поиска (нет ни названия, ни модели авто).")
+        return
+
+    try:
+        report = await search_wb_competitors(query, exclude_brand=product.brand or settings.brand_name)
+    except CompetitorAnalysisError as exc:
+        await callback.message.answer(f"⚠️ {exc}")
+        return
+
+    cost_price = float(product.cost_price) if product.cost_price else None
+    pricing = suggest_pricing(report, cost_price) if report.items else None
+    await callback.message.answer(texts.price_check_report(report, pricing))
+
+    if pricing and pricing.get("recommended_price"):
+        await callback.message.answer(
+            "Обновить цену товара?", reply_markup=price_suggestion_kb(product_id, pricing["recommended_price"])
+        )
+
+
+@router.callback_query(F.data.startswith("setprice:"))
+async def set_price(callback: CallbackQuery, product_service) -> None:
+    _, product_id_raw, value = callback.data.split(":")
+    product_id = int(product_id_raw)
+    await callback.answer()
+
+    if value == "keep":
+        await callback.message.answer("Цена не изменена.")
+        return
+
+    price = float(value)
+    await product_service.update_fields(product_id, price=price)
+    await callback.message.answer(texts.price_set(product_id, price))

@@ -6,7 +6,17 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 
-from app.bot.handlers import admin, analytics, clone_product, common, competitors, list_products, new_product, reviews
+from app.bot.handlers import (
+    admin,
+    analytics,
+    clone_product,
+    common,
+    competitors,
+    list_products,
+    new_product,
+    quick_create,
+    reviews,
+)
 from app.bot.middlewares import AccessControlMiddleware, DbSessionMiddleware
 from app.config import settings
 
@@ -38,6 +48,7 @@ async def main() -> None:
 
     dp.include_router(common.router)
     dp.include_router(admin.router)
+    dp.include_router(quick_create.router)
     dp.include_router(new_product.router)
     dp.include_router(competitors.router)
     dp.include_router(analytics.router)

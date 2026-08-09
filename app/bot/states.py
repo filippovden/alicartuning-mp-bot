@@ -8,7 +8,6 @@ class NewProductStates(StatesGroup):
     category_pick_wb = State()
     category_pick_ozon = State()
     title = State()
-    brand = State()
     vendor_code = State()
     cost_price = State()
     price = State()
@@ -27,6 +26,16 @@ class NewProductStates(StatesGroup):
 class EditProductStates(StatesGroup):
     choosing_field = State()
     entering_value = State()
+
+
+class QuickCreateStates(StatesGroup):
+    """Быстрое создание товара (раздел B ТЗ): фото + одно сообщение вместо анкеты."""
+
+    photos = State()
+    description = State()
+    vendor_code = State()
+    dimensions = State()
+    weight = State()
 
 
 class CloneProductStates(StatesGroup):
