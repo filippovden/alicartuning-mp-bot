@@ -35,7 +35,7 @@ SKIP_TEMPLATE_CALLBACK = "skip:clone_template"
 async def cmd_clone(message: Message, state: FSMContext, product_service) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Использование: /clone <ID товара>")
+        await message.answer("Использование: /clone [ID товара]")
         return
     await _start_clone(message, state, product_service, int(args[1].strip()))
 

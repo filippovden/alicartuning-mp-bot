@@ -45,7 +45,7 @@ async def cmd_analytics(message: Message, product_service, session) -> None:
         lines.append(f"\n<b>Ozon:</b> ⚠️ не удалось получить данные ({exc.message})")
 
     lines.append(
-        "\nПодсказка: /analytics <ID товара> — рекомендация цены и тайминг "
+        "\nПодсказка: /analytics [ID товара] — рекомендация цены и тайминг "
         "продвижения по конкретному товару."
     )
     await message.answer("\n".join(lines))

@@ -103,7 +103,7 @@ async def continue_draft(callback: CallbackQuery, state: FSMContext, product_ser
 async def cmd_status(message: Message, product_service) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Использование: /status <ID товара>")
+        await message.answer("Использование: /status [ID товара]")
         return
 
     product = await product_service.get_product(int(args[1]))
@@ -121,7 +121,7 @@ async def cmd_status(message: Message, product_service) -> None:
 async def cmd_edit(message: Message, state: FSMContext, product_service) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Использование: /edit <ID товара>")
+        await message.answer("Использование: /edit [ID товара]")
         return
 
     product = await product_service.get_product(int(args[1]))

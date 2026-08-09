@@ -49,7 +49,7 @@ def _format_report(report, cost_price: float | None = None) -> str:
 async def cmd_competitors(message: Message) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer("Использование: /competitors <ключевое слово>\nНапример: /competitors накладки на зеркала Granta")
+        await message.answer("Использование: /competitors [ключевое слово]\nНапример: /competitors накладки на зеркала Granta")
         return
 
     query = args[1].strip()
