@@ -21,7 +21,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import confirm_publish_kb, publish_links_kb, skip_kb
+from app.bot.handlers.new_product import render_preview, try_generate_ai_content
+from app.bot.keyboards import publish_links_kb, skip_kb
 from app.bot.states import CloneBatchStates, CloneProductStates
 
 logger = logging.getLogger(__name__)
@@ -74,11 +75,14 @@ async def clone_vendor_code(message: Message, state: FSMContext, product_service
     data = await state.get_data()
     vendor_code = message.text.strip()
     await product_service.update_fields(data["product_id"], vendor_code=vendor_code)
+    product_id = data["product_id"]
     await state.clear()
 
     await message.answer(texts.generating_preview())
-    product = await product_service.generate_ai_content(data["product_id"])
-    await message.answer(texts.clone_draft_preview(product), reply_markup=confirm_publish_kb(product.id))
+    if not await try_generate_ai_content(message.answer, product_service, product_id):
+        return
+    preview_text, keyboard = await render_preview(product_service, product_id)
+    await message.answer(preview_text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("clonebatch:"))

@@ -1,28 +1,23 @@
 """Тексты сообщений бота (раздел 8 ТЗ, стиль ALICARTUNING)."""
 
+import html
+
 WELCOME = (
-    "👋 Привет! Я AI-менеджер маркетплейсов ALICARTUNING.\n\n"
-    "Помогу быстро создать карточку товара и опубликовать её на Wildberries и Ozon.\n\n"
-    "Меню снизу — основной способ пользоваться ботом. Команды — для тех, кто "
-    "предпочитает печатать:\n"
-    "/new — создать новый товар\n"
-    "/drafts — незаконченные черновики\n"
-    "/list — мои товары и черновики\n"
-    "/clone [ID] — клонировать товар под другую модель авто\n"
-    "/status — статус публикации\n"
-    "/edit [ID] — редактировать товар\n"
-    "/competitors [запрос] — анализ конкурентов на Wildberries\n"
-    "/analytics — сводка продаж и рекомендации по цене\n"
-    "/analytics [ID] — цена + когда лучше продвигаться/менять цену (тайминг-аналитика)\n"
-    "/reviews — новые отзывы и автоответы\n"
-    "/synccategories — (админ) обновить справочник категорий Ozon\n"
-    "/cancel — отменить текущий диалог"
+    "ALICARTUNING — карточки для Wildberries и Ozon.\n\n"
+    "Создавай товары, клонируй на другие модели Lada и публикуй из этого чата.\n\n"
+    "Выбери действие в меню ниже."
+)
+
+RESUME_DIALOG_NOTICE = (
+    "\n\n⚠️ У вас есть незавершённый диалог. Можно продолжить отвечать на "
+    "последний вопрос или нажать /cancel, чтобы начать заново."
 )
 
 MORE_MENU = (
     "⚙️ Ещё команды:\n\n"
-    "/status [ID] — статус публикации товара\n"
-    "/edit [ID] — изменить поле товара\n"
+    "/drafts — незаконченные черновики\n"
+    "/edit [ID] — править товар\n"
+    "/status [ID] — статус публикации\n"
     "/competitors [запрос] — анализ конкурентов на Wildberries\n"
     "/synccategories — (админ) обновить справочник категорий Ozon\n"
     "/cancel — отменить текущий диалог"
@@ -69,29 +64,57 @@ def need_more_photos(current: int, minimum: int = MIN_PRODUCT_PHOTOS) -> str:
     )
 
 
-CANCELLED = "Диалог отменён. Введите /new, чтобы начать заново."
+CANCELLED = "Отменено."
 NOT_FOUND = "Товар не найден."
 INVALID_NUMBER = "Нужно ввести число. Попробуйте ещё раз:"
 INVALID_DIMENSIONS = "Формат неверный. Введите как 500x200x50 (длина×ширина×высота в мм):"
 
-PUBLISHING = "⏳ Публикую карточку на Wildberries и Ozon..."
+PUBLISHING = "⏳ Публикую на Wildberries и Ozon..."
+
+DESCRIPTION_PREVIEW_MAX_LEN = 700
 
 
 def generating_preview() -> str:
     return "🤖 Генерирую SEO-название, описание и ключевые слова в стиле ALICARTUNING..."
 
 
-def draft_preview(title: str, description: str, price: float | None, cost_price: float | None) -> str:
-    price_part = f"{price:.0f}₽" if price else "—"
-    cost_part = f" (себестоимость {cost_price:.0f}₽)" if cost_price else ""
-    return (
-        "📝 <b>Черновик карточки:</b>\n\n"
-        f"<b>Название:</b> {title}\n\n"
-        f"<b>Описание:</b>\n{description}\n\n"
-        f"<b>Цена:</b> {price_part}{cost_part}\n\n"
-        "Проверьте данные выше. Если всё верно — нажмите «Опубликовать». "
-        "Если нужно исправить — «Редактировать»."
-    )
+def product_preview(product, validation=None) -> str:
+    """Единый формат превью карточки — раздел C1 ТЗ: один и тот же экран для
+    пошагового режима, быстрого создания и клонирования, а не три разных.
+
+    Значения полей экранируются от HTML: car_model/vendor_code вводит человек
+    руками, а сообщение отправляется с parse_mode=HTML — без экранирования
+    случайный «<» в артикуле уронил бы отправку (та же категория бага, что
+    уже случалась с плейсхолдерами в WELCOME, см. test_html_safety.py)."""
+    title = html.escape(product.title) if product.title else "(без названия)"
+    car_model = html.escape(product.car_model) if product.car_model else "—"
+    vendor_code = html.escape(product.vendor_code) if product.vendor_code else "—"
+    price_part = f"{float(product.price):.0f}" if product.price else "—"
+    photos_count = len(product.images)
+
+    lines = [
+        f"📦 <b>{title}</b>",
+        f"Модель: {car_model} · Артикул: {vendor_code}",
+        f"Цена: {price_part}₽ · Фото: {photos_count}",
+    ]
+
+    description = product.description or ""
+    if description:
+        description = html.escape(description)
+        if len(description) > DESCRIPTION_PREVIEW_MAX_LEN:
+            description = description[:DESCRIPTION_PREVIEW_MAX_LEN].rstrip() + "…"
+        lines.append("")
+        lines.append(description)
+
+    errors = validation.errors() if validation is not None else []
+    lines.append("")
+    if errors:
+        lines.append("⚠️ <b>Нужно исправить:</b>")
+        lines += [f"• {issue.message}" for issue in errors]
+    else:
+        lines.append("✅ Можно публиковать")
+
+    return "\n".join(lines)
 
 
 def validation_errors(text: str) -> str:
@@ -129,11 +152,7 @@ def publish_partial(wb_message: str | None, ozon_message: str | None) -> str:
 
 
 def clone_created(clone_id: int, source_id: int) -> str:
-    return (
-        f"✅ Черновик #{clone_id} создан на основе товара #{source_id} — категория, материал, "
-        "цвет, комплектация, габариты, вес, цена, характеристики и фото скопированы. "
-        "Дальше зададим новую модель и новый артикул."
-    )
+    return f"🧬 Клон #{clone_id} от товара #{source_id} — фото и характеристики скопированы. Модель авто?"
 
 
 ASK_CLONE_VENDOR_CODE = "Новый уникальный артикул (SKU) для клона:"
@@ -155,29 +174,16 @@ def ask_vendor_code_template() -> str:
     )
 
 
-def clone_draft_preview(product) -> str:
-    price_part = f"{float(product.price):.0f}₽" if product.price else "—"
-    cost_part = f" (себестоимость {float(product.cost_price):.0f}₽)" if product.cost_price else ""
-    return (
-        "📝 <b>Черновик карточки (клон):</b>\n\n"
-        f"<b>Модель:</b> {product.car_model} | <b>Артикул:</b> {product.vendor_code} | "
-        f"<b>Цена:</b> {price_part}{cost_part}\n\n"
-        f"<b>Название:</b> {product.title}\n\n"
-        f"<b>Описание:</b>\n{product.description}\n\n"
-        "Проверьте данные выше. Если всё верно — нажмите «Опубликовать». "
-        "Если нужно исправить — «Редактировать»."
-    )
-
-
 def batch_clone_summary(products) -> str:
     lines = [f"✅ Создано черновиков: {len(products)}"]
     for product in products:
-        lines.append(f"• #{product.id} — артикул {product.vendor_code}, модель {product.car_model}: {product.title}")
+        lines.append(f"• #{product.id} · {product.car_model} · {product.vendor_code}")
     return "\n".join(lines)
 
 
 QUICK_ASK_PHOTOS = (
-    f"⚡ Быстрое создание.\n\nПришлите от {MIN_PRODUCT_PHOTOS} фото товара, затем нажмите «Готово»."
+    f"⚡ Быстрое создание.\n\n"
+    f"Пришлите от {MIN_PRODUCT_PHOTOS} фото товара — можно подряд или альбомом."
 )
 QUICK_ASK_DESCRIPTION = (
     "Теперь одним сообщением опишите товар: тип детали, модель Lada, материал, "
@@ -185,10 +191,8 @@ QUICK_ASK_DESCRIPTION = (
     "Пример: «Накладки зеркал BMW-стиль, Lada Granta, ABS, чёрный глянец, цена 990»"
 )
 QUICK_PARSING = "🤖 Разбираю описание..."
-QUICK_PARSE_FAILED = (
-    "⚠️ Не смог разобрать описание — попробуйте переформулировать короче, "
-    "в одном сообщении, например: «Накладки зеркал, Lada Vesta, ABS-пластик, чёрный, 990₽»."
-)
+QUICK_PARSE_FAILED = "⚠️ Не смог разобрать описание. Можно попробовать ещё раз или заполнить пошагово:"
+QUICK_SEND_PHOTOS_FIRST = "Сначала пришлите хотя бы одно фото."
 
 
 def quick_ask_vendor_code(car_model: str) -> str:
@@ -197,20 +201,6 @@ def quick_ask_vendor_code(car_model: str) -> str:
 
 ASK_QUICK_DIMENSIONS = "Размеры в упаковке не удалось определить из текста — укажите (длина×ширина×высота, мм). Пример: 500x200x50:"
 ASK_QUICK_WEIGHT = "Вес в упаковке не удалось определить из текста — укажите (грамм):"
-
-
-def quick_checklist(product, missing: list[str]) -> str:
-    """Чеклист готовности карточки в быстром режиме — видно, что уже есть, а чего не хватает."""
-    lines = ["📝 <b>Черновик готов, проверьте:</b>\n"]
-    lines.append(f"✅ Название: {product.title}")
-    lines.append("✅ Описание" if product.description else "⚠️ Нет описания")
-    photos_count = len(product.images)
-    lines.append(f"✅ Фото ({photos_count})" if photos_count >= MIN_PRODUCT_PHOTOS else f"⚠️ Мало фото ({photos_count})")
-    for field_label in missing:
-        lines.append(f"⚠️ Нет: {field_label}")
-    if not missing:
-        lines.append("✅ Всё заполнено — можно публиковать")
-    return "\n".join(lines)
 
 
 def draft_list_item(product) -> str:
@@ -261,4 +251,9 @@ def product_list_item(product) -> str:
         "partially_published": "⚠️",
         "error": "❌",
     }.get(product.status.value, "•")
-    return f"{status_emoji} #{product.id} {product.title or '(без названия)'}"
+    parts = [f"{status_emoji} #{product.id}", product.title or "(без названия)"]
+    if product.car_model:
+        parts.append(product.car_model)
+    if product.price:
+        parts.append(f"{float(product.price):.0f}₽")
+    return " · ".join(parts)

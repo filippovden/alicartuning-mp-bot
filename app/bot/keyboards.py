@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 MENU_NEW_PRODUCT = "📦 Новый товар"
@@ -7,6 +7,10 @@ MENU_CLONE = "🧬 Клонировать"
 MENU_REVIEWS = "⭐ Отзывы"
 MENU_ANALYTICS = "📊 Аналитика"
 MENU_MORE = "⚙️ Ещё"
+
+
+def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -28,28 +32,68 @@ def new_product_mode_kb() -> InlineKeyboardMarkup:
 
 
 def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
+    """Превью карточки — раздел C2 ТЗ: одно главное действие сверху, дальше
+    самое нужное в паре рядов, «Обработать фото»/«Анализ конкурентов» убраны
+    отсюда (перегружали главный экран) и живут в карточке товара (см.
+    product_detail_kb) — там, где до них реально доходит очередь."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Опубликовать на WB и Ozon", callback_data=f"publish:{product_id}")
-    builder.button(text="🎨 Инфографика", callback_data=f"gengraphic:{product_id}")
-    builder.button(text="🖼 Обработать фото (убрать фон)", callback_data=f"processimg:{product_id}")
-    builder.button(text="💰 Цена по рынку", callback_data=f"pricecheck:{product_id}")
-    builder.button(text="🔍 Анализ конкурентов", callback_data=f"competitors:{product_id}")
-    builder.button(text="🧬 Другие модели Lada", callback_data=f"clone:{product_id}")
-    builder.button(text="✏️ Править", callback_data=f"edit:{product_id}")
-    builder.button(text="❌ Отмена", callback_data=f"cancel:{product_id}")
+    builder.row(_btn("✅ Опубликовать на WB и Ozon", f"publish:{product_id}"))
+    builder.row(
+        _btn("🎨 Инфографика", f"gengraphic:{product_id}"),
+        _btn("💰 Цена", f"pricecheck:{product_id}"),
+    )
+    builder.row(
+        _btn("🧬 Другие модели", f"clone:{product_id}"),
+        _btn("✏️ Править", f"edit:{product_id}"),
+    )
+    builder.row(_btn("❌ Отмена", f"cancel:{product_id}"))
+    return builder.as_markup()
+
+
+def open_product_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
+    """/list — раздел D1 ТЗ: одна кнопка «Открыть» на товар вместо сетки из
+    трёх технически звучащих кнопок (Клон/Пакет/Публикация) на каждую строку."""
+    builder = InlineKeyboardBuilder()
+    for product_id in product_ids:
+        builder.button(text=f"Открыть #{product_id}", callback_data=f"open:{product_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def product_detail_kb(product_id: int) -> InlineKeyboardMarkup:
+    """Карточка товара после «Открыть» — раздел D2 ТЗ: короткое превью + весь
+    набор действий по конкретному товару в одном месте."""
+    builder = InlineKeyboardBuilder()
+    builder.row(_btn("✅ Опубликовать", f"publish:{product_id}"))
+    builder.row(_btn("🧬 Клон", f"clone:{product_id}"), _btn("📦 Пакет на модели", f"clonebatch:{product_id}"))
+    builder.row(_btn("✏️ Править", f"edit:{product_id}"), _btn("🎨 Инфографика", f"gengraphic:{product_id}"))
+    builder.row(_btn("🖼 Фото", f"processimg:{product_id}"), _btn("🔍 Конкуренты", f"competitors:{product_id}"))
+    return builder.as_markup()
+
+
+def clone_pick_kb(products: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """«Что клонируем?» — раздел A5 ТЗ: отдельный, понятный список для
+    клонирования вместо переиспользования общего /list без пояснения."""
+    builder = InlineKeyboardBuilder()
+    for product_id, label in products:
+        text = label if len(label) <= 60 else label[:57] + "…"
+        builder.button(text=f"🧬 {text}", callback_data=f"clone:{product_id}")
     builder.adjust(1)
     return builder.as_markup()
 
 
-def product_actions_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
-    """Три кнопки на каждый товар в /list: клон, пакет на несколько моделей,
-    публикация — без этого приходилось помнить и вводить /clone <ID> вручную."""
+def retry_ai_kb(product_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for product_id in product_ids:
-        builder.button(text=f"🧬 Клон #{product_id}", callback_data=f"clone:{product_id}")
-        builder.button(text=f"📦 Пакет #{product_id}", callback_data=f"clonebatch:{product_id}")
-        builder.button(text=f"🚀 Публикация #{product_id}", callback_data=f"publish:{product_id}")
-    builder.adjust(3)
+    builder.button(text="🔄 Повторить", callback_data=f"regenai:{product_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def quick_parse_failed_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Написать заново", callback_data="quickretry")
+    builder.button(text="📝 Заполнить пошагово", callback_data="quickfallbackstep")
+    builder.adjust(1)
     return builder.as_markup()
 
 

@@ -10,7 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import category_match_kb, confirm_publish_kb, photos_done_kb, skip_kb
+from app.bot.keyboards import category_match_kb, confirm_publish_kb, main_menu_kb, photos_done_kb, retry_ai_kb, skip_kb
 from app.bot.states import NewProductStates
 from app.config import settings
 from app.services.category_search import (
@@ -53,6 +53,31 @@ def _photo_size_warning(image_bytes: bytes) -> str | None:
     if not issues:
         return None
     return "\n".join(str(issue) for issue in issues)
+
+
+async def render_preview(product_service, product_id: int):
+    """Единый экран превью — раздел C1 ТЗ: один и тот же формат для пошагового
+    режима, быстрого создания и клонирования (см. texts.product_preview),
+    вместо трёх похожих, но чуть разных текстов."""
+    product = await product_service.get_product(product_id)
+    validation = await product_service.validate(product_id)
+    return texts.product_preview(product, validation), confirm_publish_kb(product.id)
+
+
+async def try_generate_ai_content(answer, product_service, product_id: int) -> bool:
+    """Раздел H.6 ТЗ: сбой генерации AI-текста не должен ронять диалог —
+    показываем понятную ошибку с кнопкой «Повторить» вместо необработанного
+    исключения, из-за которого бот молча переставал бы отвечать."""
+    try:
+        await product_service.generate_ai_content(product_id)
+        return True
+    except Exception:
+        logger.warning("Не удалось сгенерировать текст карточки #%s", product_id, exc_info=True)
+        await answer(
+            "⚠️ Не получилось сгенерировать текст карточки — AI недоступен. Попробуйте ещё раз:",
+            reply_markup=retry_ai_kb(product_id),
+        )
+        return False
 
 
 @router.message(Command("new"))
@@ -366,11 +391,21 @@ async def _ask_next_attribute_or_generate(message: Message, state: FSMContext, p
 
     await state.set_state(NewProductStates.confirm)
     await message.answer(texts.generating_preview())
-    product = await product_service.generate_ai_content(data["product_id"])
-    await message.answer(
-        texts.draft_preview(product.title, product.description, float(product.price) if product.price else None, float(product.cost_price) if product.cost_price else None),
-        reply_markup=confirm_publish_kb(product.id),
-    )
+    product_id = data["product_id"]
+    if not await try_generate_ai_content(message.answer, product_service, product_id):
+        return
+    preview_text, keyboard = await render_preview(product_service, product_id)
+    await message.answer(preview_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("regenai:"))
+async def regenerate_ai_content(callback: CallbackQuery, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+    if not await try_generate_ai_content(callback.message.answer, product_service, product_id):
+        return
+    preview_text, keyboard = await render_preview(product_service, product_id)
+    await callback.message.answer(preview_text, reply_markup=keyboard)
 
 
 @router.message(NewProductStates.dynamic_attribute)
@@ -491,9 +526,9 @@ async def _publish_one(product_service, product_id: int) -> tuple[bool, str]:
     if summary.all_succeeded:
         parts = []
         if summary.wb and summary.wb.external_id:
-            parts.append(f"WB nmID {summary.wb.external_id}")
+            parts.append(f"WB: ID {summary.wb.external_id}")
         if summary.ozon and summary.ozon.external_id:
-            parts.append(f"Ozon {summary.ozon.external_id}")
+            parts.append(f"Ozon: ID {summary.ozon.external_id}")
         return True, ", ".join(parts) or "опубликован"
 
     notes = [m for m in (summary.wb.message if summary.wb else None, summary.ozon.message if summary.ozon else None) if m]
@@ -511,24 +546,23 @@ async def publish_all(callback: CallbackQuery, product_service) -> None:
 
     results = []
     for product_id in product_ids:
-        ok, note = await _publish_one(product_service, product_id)
+        try:
+            ok, note = await _publish_one(product_service, product_id)
+        except Exception as exc:
+            # Раздел H.8 ТЗ: неожиданная ошибка на одном товаре не должна молча
+            # оборвать пакет — остальные товары всё равно должны попасть в отчёт.
+            logger.warning("Публикация товара #%s в пакете упала неожиданно", product_id, exc_info=True)
+            ok, note = False, f"непредвиденная ошибка — {exc}"
         results.append((product_id, ok, note))
 
     await callback.message.answer(texts.publish_all_summary(results))
-
-
-@router.callback_query(F.data.startswith("edit:"))
-async def edit_from_preview(callback: CallbackQuery) -> None:
-    product_id = callback.data.split(":")[1]
-    await callback.answer()
-    await callback.message.answer(f"Чтобы отредактировать поля — используйте /edit {product_id}")
 
 
 @router.callback_query(F.data.startswith("cancel:"))
 async def cancel_from_preview(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.answer()
-    await callback.message.answer(texts.CANCELLED)
+    await callback.message.answer(texts.CANCELLED, reply_markup=main_menu_kb())
 
 
 # --- Возобновление черновика (/drafts, раздел C.5 ТЗ) -----------------------

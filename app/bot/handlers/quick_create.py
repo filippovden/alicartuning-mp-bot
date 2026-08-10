@@ -15,8 +15,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.handlers.new_product import DIMENSIONS_RE, _photo_size_warning
-from app.bot.keyboards import confirm_publish_kb, photos_done_kb
+from app.bot.handlers.new_product import (
+    DIMENSIONS_RE,
+    _photo_size_warning,
+    render_preview,
+    resume_state_for_product,
+    try_generate_ai_content,
+)
+from app.bot.keyboards import photos_done_kb, quick_parse_failed_kb
 from app.bot.states import QuickCreateStates
 from app.config import settings
 from app.services.ai.client import AIContentGenerationError
@@ -41,7 +47,9 @@ async def start_quick_mode(callback: CallbackQuery, state: FSMContext, product_s
     await state.set_state(QuickCreateStates.photos)
     await state.update_data(product_id=product.id, photos=[])
     await callback.answer()
-    await callback.message.answer(texts.QUICK_ASK_PHOTOS, reply_markup=photos_done_kb())
+    # Раздел B.2 ТЗ: кнопка «Готово» появляется только после первого фото —
+    # нажимать её при пустом черновике бессмысленно.
+    await callback.message.answer(texts.QUICK_ASK_PHOTOS)
 
 
 @router.message(QuickCreateStates.photos, F.photo)
@@ -63,6 +71,13 @@ async def quick_photo(message: Message, state: FSMContext, product_service, sess
     await message.answer(texts.PHOTO_RECEIVED.format(count=len(photos)), reply_markup=photos_done_kb())
 
 
+@router.message(QuickCreateStates.photos)
+async def quick_photos_wrong_input(message: Message) -> None:
+    # Раздел B.2 ТЗ: пока фото нет ни одного, любое другое сообщение — не
+    # молчаливо игнорировать, а подсказать, что делать дальше.
+    await message.answer(texts.QUICK_SEND_PHOTOS_FIRST)
+
+
 @router.callback_query(F.data == "photos_done", QuickCreateStates.photos)
 async def quick_photos_done(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
@@ -77,6 +92,39 @@ async def quick_photos_done(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.answer(texts.QUICK_ASK_DESCRIPTION)
 
 
+@router.callback_query(F.data == "quickretry", QuickCreateStates.description)
+async def quick_retry_description(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(texts.QUICK_ASK_DESCRIPTION)
+
+
+@router.callback_query(F.data == "quickfallbackstep", QuickCreateStates.description)
+async def quick_fallback_to_step(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    """Провал парсинга в быстром режиме → пошаговый режим, но не с нуля: фото
+    и бренд уже в черновике, продолжаем с первого незаполненного поля (раздел
+    B.2 ТЗ — «пошаговый режим должен подхватить уже загруженные фото»)."""
+    data = await state.get_data()
+    product_id = data["product_id"]
+    photos = data.get("photos", [])
+    await callback.answer()
+
+    product = await product_service.get_product(product_id)
+    next_state, question = await resume_state_for_product(product)
+    await state.update_data(photos=photos, pending_attrs=[])
+
+    if next_state is None:
+        await state.clear()
+        await callback.message.answer(texts.generating_preview())
+        if not await try_generate_ai_content(callback.message.answer, product_service, product_id):
+            return
+        preview_text, keyboard = await render_preview(product_service, product_id)
+        await callback.message.answer(preview_text, reply_markup=keyboard)
+        return
+
+    await state.set_state(next_state)
+    await callback.message.answer(question)
+
+
 @router.message(QuickCreateStates.description)
 async def quick_description(message: Message, state: FSMContext, product_service, session) -> None:
     data = await state.get_data()
@@ -87,7 +135,7 @@ async def quick_description(message: Message, state: FSMContext, product_service
         parsed = await product_service.ai_service.parse_quick_description(message.text.strip())
     except AIContentGenerationError:
         logger.warning("Не удалось разобрать быстрое описание товара %s", product_id, exc_info=True)
-        await message.answer(texts.QUICK_PARSE_FAILED)
+        await message.answer(texts.QUICK_PARSE_FAILED, reply_markup=quick_parse_failed_kb())
         return
 
     fields = {}
@@ -125,7 +173,18 @@ async def quick_description(message: Message, state: FSMContext, product_service
             logger.warning("Не удалось автоподобрать категорию для товара %s: %s", product_id, exc)
 
     await message.answer(texts.generating_preview())
-    await product_service.generate_ai_content(product_id)
+    try:
+        await product_service.generate_ai_content(product_id)
+    except Exception:
+        # Раздел H.6 ТЗ: держим состояние в description, а не переключаем на
+        # общий «Повторить» — так те же кнопки («Написать заново»/«Пошагово»)
+        # остаются рабочими и не оставляют диалог в непонятном промежуточном шаге.
+        logger.warning("Не удалось сгенерировать текст для товара %s", product_id, exc_info=True)
+        await message.answer(
+            "⚠️ Не получилось сгенерировать текст карточки — AI недоступен.",
+            reply_markup=quick_parse_failed_kb(),
+        )
+        return
 
     await state.update_data(need_dimensions=not dims_present, need_weight=not bool(weight))
     await state.set_state(QuickCreateStates.vendor_code)
@@ -216,17 +275,7 @@ async def quick_weight(message: Message, state: FSMContext, product_service) -> 
 
 async def _finish_quick_flow(message: Message, state: FSMContext, product_service) -> None:
     data = await state.get_data()
-    product = await product_service.get_product(data["product_id"])
+    product_id = data["product_id"]
     await state.clear()
-
-    missing = []
-    if not product.vendor_code:
-        missing.append("артикул")
-    if not (product.length_mm and product.width_mm and product.height_mm):
-        missing.append("размеры упаковки")
-    if not product.weight_g:
-        missing.append("вес упаковки")
-    if not product.category_id:
-        missing.append("категория (уточните через «✏️ Править»)")
-
-    await message.answer(texts.quick_checklist(product, missing), reply_markup=confirm_publish_kb(product.id))
+    preview_text, keyboard = await render_preview(product_service, product_id)
+    await message.answer(preview_text, reply_markup=keyboard)

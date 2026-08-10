@@ -30,5 +30,5 @@ def test_texts_module_has_no_disallowed_html_tags():
 def test_welcome_and_more_menu_use_square_bracket_placeholders():
     assert "<" not in texts.WELCOME
     assert "<" not in texts.MORE_MENU
-    assert "/clone [ID]" in texts.WELCOME
-    assert "/edit [ID]" in texts.WELCOME
+    assert "/edit [ID]" in texts.MORE_MENU
+    assert "/status [ID]" in texts.MORE_MENU

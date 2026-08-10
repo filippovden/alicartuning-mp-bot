@@ -112,9 +112,16 @@ async def test_menu_more_shows_commands():
 
 
 @pytest.mark.asyncio
-async def test_quick_flow_full_happy_path_reaches_checklist_without_extra_questions(session):
+async def test_quick_flow_full_happy_path_reaches_checklist_without_extra_questions(session, monkeypatch):
     """Все поля, включая размеры/вес, распознаны из текста — бот не должен
     задавать лишних вопросов, кроме обязательного артикула (раздел B ТЗ)."""
+    from app.services.category_search import WbCategoryMatch
+
+    async def fake_search_wb_categories(query, limit=1):
+        return [WbCategoryMatch(subject_id=212, name="Накладки на зеркала")]
+
+    monkeypatch.setattr(quick_create, "search_wb_categories", fake_search_wb_categories)
+
     parsed = {
         "draft_title": "Накладки зеркал BMW-стиль",
         "car_model": "Lada Granta",
@@ -157,9 +164,9 @@ async def test_quick_flow_full_happy_path_reaches_checklist_without_extra_questi
     assert product.car_model == "Lada Granta"
     assert product.price == 990
     assert product.length_mm == 300 and product.weight_g == 400
-    checklist = vendor_message.answered[-1]
-    assert "Черновик готов" in checklist
-    assert "Нет: артикул" not in checklist
+    preview = vendor_message.answered[-1]
+    assert "Артикул: ART-GRANTA-990" in preview
+    assert "✅ Можно публиковать" in preview
 
 
 @pytest.mark.asyncio
@@ -203,8 +210,8 @@ async def test_quick_flow_asks_dimensions_and_weight_when_not_guessed(session):
 
     product = await service.get_product(data["product_id"])
     assert product.length_mm == 300 and product.weight_g == 450
-    checklist = weight_message.answered[-1]
-    assert "Черновик готов" in checklist
+    preview = weight_message.answered[-1]
+    assert "Артикул: ART-VESTA-1" in preview
 
 
 @pytest.mark.asyncio

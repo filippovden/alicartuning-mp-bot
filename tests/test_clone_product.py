@@ -186,7 +186,7 @@ async def test_cmd_clone_starts_car_model_flow(session):
 
     await cmd_clone(message, state, service)
 
-    assert any("создан на основе" in t for t in message.answered)
+    assert any("Клон" in t for t in message.answered)
     assert any(t == texts.ASK_CAR_MODEL for t in message.answered)
     assert await state.get_state() == "CloneProductStates:car_model"
 
@@ -286,9 +286,9 @@ async def test_clone_vendor_code_generates_content_and_shows_preview_with_publis
     assert "Granta" in product.title
     assert await state.get_state() is None
 
-    preview = next(t for t in message.answered if "Черновик карточки" in t)
-    assert "Артикул:</b> ART-GRANTA-1" in preview
-    assert "Модель:</b> Lada Granta" in preview
+    preview = message.answered[-1]
+    assert "Модель: Lada Granta" in preview
+    assert "Артикул: ART-GRANTA-1" in preview
 
 
 # --- Хендлеры: пакетное клонирование --------------------------------------------

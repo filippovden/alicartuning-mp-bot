@@ -8,8 +8,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.handlers.new_product import resume_state_for_product
-from app.bot.keyboards import confirm_publish_kb, drafts_kb, product_actions_kb
+from app.bot.handlers.new_product import render_preview, resume_state_for_product, try_generate_ai_content
+from app.bot.keyboards import drafts_kb, open_product_kb, product_detail_kb
 from app.bot.states import EditProductStates
 from app.db.models import ProductStatus
 
@@ -42,7 +42,24 @@ async def cmd_list(message: Message, product_service) -> None:
         return
 
     lines = [texts.product_list_item(p) for p in products]
-    await message.answer("\n".join(lines), reply_markup=product_actions_kb([p.id for p in products]))
+    await message.answer("\n".join(lines), reply_markup=open_product_kb([p.id for p in products]))
+
+
+@router.callback_query(F.data.startswith("open:"))
+async def open_product(callback: CallbackQuery, product_service) -> None:
+    """«Открыть #ID» из /list — раздел D2 ТЗ: короткое превью товара + весь
+    набор действий по нему на одном экране, вместо технической сетки кнопок
+    прямо в общем списке."""
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    preview_text, _ = await render_preview(product_service, product_id)
+    await callback.message.answer(preview_text, reply_markup=product_detail_kb(product_id))
 
 
 @router.message(Command("drafts"))
@@ -83,16 +100,10 @@ async def continue_draft(callback: CallbackQuery, state: FSMContext, product_ser
     if next_state is None:
         await state.clear()
         await callback.message.answer(texts.generating_preview())
-        updated = await product_service.generate_ai_content(product.id)
-        await callback.message.answer(
-            texts.draft_preview(
-                updated.title,
-                updated.description,
-                float(updated.price) if updated.price else None,
-                float(updated.cost_price) if updated.cost_price else None,
-            ),
-            reply_markup=confirm_publish_kb(updated.id),
-        )
+        if not await try_generate_ai_content(callback.message.answer, product_service, product.id):
+            return
+        preview_text, keyboard = await render_preview(product_service, product.id)
+        await callback.message.answer(preview_text, reply_markup=keyboard)
         return
 
     await state.set_state(next_state)
@@ -123,16 +134,28 @@ async def cmd_edit(message: Message, state: FSMContext, product_service) -> None
     if len(args) < 2 or not args[1].strip().isdigit():
         await message.answer("Использование: /edit [ID товара]")
         return
+    await start_edit(message.answer, state, product_service, int(args[1]))
 
-    product = await product_service.get_product(int(args[1]))
+
+@router.callback_query(F.data.startswith("edit:"))
+async def edit_from_preview(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    """«✏️ Править» из превью — раздел G ТЗ: сразу открывает выбор поля, а не
+    отправляет пользователя вручную набирать /edit [ID]."""
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+    await start_edit(callback.message.answer, state, product_service, product_id)
+
+
+async def start_edit(answer, state: FSMContext, product_service, product_id: int) -> None:
+    product = await product_service.get_product(product_id)
     if product is None:
-        await message.answer(texts.NOT_FOUND)
+        await answer(texts.NOT_FOUND)
         return
 
     field_list = "\n".join(f"{key}. {label}" for key, (_, label) in EDITABLE_FIELDS.items())
     await state.set_state(EditProductStates.choosing_field)
     await state.update_data(product_id=product.id)
-    await message.answer(f"Что редактируем у товара #{product.id}?\n\n{field_list}\n\nВведите номер поля:")
+    await answer(f"Что правим у товара #{product.id}?\n\n{field_list}\n\nВведите номер поля:")
 
 
 @router.message(EditProductStates.choosing_field)

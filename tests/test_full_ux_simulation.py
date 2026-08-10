@@ -246,7 +246,7 @@ async def test_A_main_menu_buttons_and_start_help(session):
         try:
             user = _FakeUser(1000 + i)
             msg = _FakeMessage(user=user)
-            await common.cmd_start(msg, service, session)
+            await common.cmd_start(msg, service, session, _make_state(user.id))
             assert texts.WELCOME in msg.answered
 
             msg2 = _FakeMessage(user=user)
@@ -556,7 +556,7 @@ async def test_D_list_clone_batch_publish_all(session, monkeypatch):
             assert "Создано черновиков: 3" in summary
 
             created_ids = [
-                int(part.split("#")[1].split(" —")[0]) for part in summary.splitlines() if part.startswith("•")
+                int(part.split("#")[1].split(" ·")[0]) for part in summary.splitlines() if part.startswith("•")
             ]
             assert len(created_ids) == 3
 
