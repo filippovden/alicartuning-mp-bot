@@ -651,7 +651,7 @@ async def test_G_competitors_command_and_callback(session, monkeypatch):
             service = ProductService(session)
             product = await _make_ready_product(session, service, telegram_id=7000 + i, vendor_code=f"ART-COMP-{i}")
 
-            msg = _FakeMessage(f"/competitors накладки {i}", user=_FakeUser(7000 + i))
+            msg = _FakeMessage(f"/market накладки {i}", user=_FakeUser(7000 + i))
             await competitors_handler.cmd_competitors(msg)
             assert msg.answered
 

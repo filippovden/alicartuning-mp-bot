@@ -6,12 +6,15 @@ from app.services.competitor_analysis import (
     CompetitorAnalysisError,
     CompetitorItem,
     CompetitorReport,
+    fetch_wb_shop,
+    parse_wb_seller_id,
     search_ozon_competitors,
     search_wb_competitors,
     suggest_pricing,
 )
 
 WB_SEARCH_URL = "https://search.wb.ru/exactmatch/ru/common/v9/search"
+WB_SELLER_CATALOG_URL = "https://catalog.wb.ru/sellers/catalog"
 
 
 @pytest.mark.asyncio
@@ -147,3 +150,89 @@ def test_suggest_pricing_flags_price_far_below_market():
     result = suggest_pricing(report, cost_price=100, target_margin_pct=35)
     assert result["margin_based_price"] == 135.0
     assert "ниже конкурентов" in result["note"]
+
+
+def test_average_rating_and_total_feedbacks():
+    report = CompetitorReport(
+        query="x",
+        items=[
+            CompetitorItem(name="a", price=100, rating=4.0, feedbacks=10),
+            CompetitorItem(name="b", price=200, rating=5.0, feedbacks=20),
+            CompetitorItem(name="c", price=300),  # без рейтинга/отзывов — не должен ломать среднее
+        ],
+    )
+    assert report.average_rating == 4.5
+    assert report.total_feedbacks == 30
+
+
+def test_average_rating_and_total_feedbacks_empty():
+    report = CompetitorReport(query="x", items=[])
+    assert report.average_rating is None
+    assert report.total_feedbacks is None
+
+
+# --- parse_wb_seller_id -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("https://www.wildberries.ru/seller/12345", "12345"),
+        ("wildberries.ru/seller/998877", "998877"),
+        ("https://www.wildberries.ru/seller/555?utm_source=x", "555"),
+        ("42", "42"),
+        ("  42  ", "42"),
+    ],
+)
+def test_parse_wb_seller_id_valid(text, expected):
+    assert parse_wb_seller_id(text) == expected
+
+
+@pytest.mark.parametrize("text", ["не ссылка", "https://www.wildberries.ru/catalog/123", ""])
+def test_parse_wb_seller_id_invalid(text):
+    assert parse_wb_seller_id(text) is None
+
+
+# --- fetch_wb_shop -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_paginates_until_empty_page():
+    page1 = [{"name": f"item{i}", "salePriceU": 100000, "reviewRating": 4.5, "feedbacks": 5} for i in range(2)]
+    respx.get(WB_SELLER_CATALOG_URL, params={"page": "1"}).mock(
+        return_value=httpx.Response(200, json={"data": {"products": page1}})
+    )
+    respx.get(WB_SELLER_CATALOG_URL, params={"page": "2"}).mock(
+        return_value=httpx.Response(200, json={"data": {"products": []}})
+    )
+    report = await fetch_wb_shop("12345", max_pages=5)
+    assert len(report.items) == 2
+    assert report.average_price == 1000.0
+    assert report.average_rating == 4.5
+    assert report.total_feedbacks == 10
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_stops_at_max_pages():
+    page = [{"name": "x", "salePriceU": 100000}]
+    respx.get(WB_SELLER_CATALOG_URL).mock(return_value=httpx.Response(200, json={"data": {"products": page}}))
+    report = await fetch_wb_shop("12345", max_pages=2, limit=1000)
+    assert len(report.items) == 2  # ровно по одной странице * max_pages
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_no_products_raises():
+    respx.get(WB_SELLER_CATALOG_URL).mock(return_value=httpx.Response(200, json={"data": {"products": []}}))
+    with pytest.raises(CompetitorAnalysisError):
+        await fetch_wb_shop("99999999")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_network_error_raises():
+    respx.get(WB_SELLER_CATALOG_URL).mock(return_value=httpx.Response(500))
+    with pytest.raises(CompetitorAnalysisError):
+        await fetch_wb_shop("12345")

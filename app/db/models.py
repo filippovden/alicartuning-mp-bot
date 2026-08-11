@@ -320,3 +320,26 @@ class CompetitorPriceSnapshot(Base):
     max_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     item_count: Mapped[int] = mapped_column(Integer, default=0)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# --- SHOP SNAPSHOTS (разбор магазина-конкурента по ссылке, /shop) --------------
+# В отличие от CompetitorPriceSnapshot (снимок по ключевому слову, привязан к
+# своему товару), это снимок ВСЕГО магазина конкурента по его seller_id — не
+# привязан ни к одному товару. История цен/ассортимента копится с момента
+# первого запроса /shop, дальше поддерживается Celery-задачей (см.
+# app/worker/celery_app.py, snapshot_tracked_shops).
+
+
+class ShopSnapshot(Base):
+    __tablename__ = "shop_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), default=Marketplace.WB)
+    seller_id: Mapped[str] = mapped_column(String(64), index=True)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    min_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    max_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    avg_rating: Mapped[float | None] = mapped_column(Numeric(3, 2), nullable=True)
+    total_feedbacks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

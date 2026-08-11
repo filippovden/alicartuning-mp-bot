@@ -26,6 +26,7 @@ from app.db.models import (
     Product,
     PublishLog,
     Review,
+    ShopSnapshot,
     User,
 )
 from app.db.session import engine
@@ -119,6 +120,23 @@ class CompetitorPriceSnapshotAdmin(ModelView, model=CompetitorPriceSnapshot):
     can_edit = False
 
 
+class ShopSnapshotAdmin(ModelView, model=ShopSnapshot):
+    name = "Снимок магазина-конкурента"
+    name_plural = "История магазинов-конкурентов (/shop)"
+    icon = "fa-solid fa-shop"
+    column_list = [
+        ShopSnapshot.id,
+        ShopSnapshot.seller_id,
+        ShopSnapshot.avg_price,
+        ShopSnapshot.item_count,
+        ShopSnapshot.avg_rating,
+        ShopSnapshot.captured_at,
+    ]
+    column_sortable_list = [ShopSnapshot.captured_at, ShopSnapshot.avg_price]
+    can_create = False  # заполняется командой /shop и Celery-задачей snapshot_tracked_shops
+    can_edit = False
+
+
 class PublishLogAdmin(ModelView, model=PublishLog):
     name = "Лог публикации"
     name_plural = "Логи публикации"
@@ -152,6 +170,7 @@ def register_admin(app: FastAPI) -> Admin | None:
         OzonCategoryNodeAdmin,
         ProductAdmin,
         CompetitorPriceSnapshotAdmin,
+        ShopSnapshotAdmin,
         ReviewAdmin,
         PublishLogAdmin,
         UserAdmin,

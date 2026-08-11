@@ -31,6 +31,10 @@ celery_app.conf.beat_schedule = {
         "task": "check_wb_card_status",
         "schedule": 45 * 60,  # раздел E.2 ТЗ: раз в 30-60 минут, best-effort (см. ProductService.check_wb_card_status)
     },
+    "snapshot-tracked-shops-daily": {
+        "task": "snapshot_tracked_shops",
+        "schedule": 24 * 60 * 60,  # тренд цены магазина-конкурента (/shop) копится с первого запроса
+    },
 }
 
 
@@ -195,6 +199,40 @@ def snapshot_competitor_prices_task() -> dict:
                 await bot.session.close()
 
             return {"products_checked": len(products), "snapshots_taken": len(snapshotted), "trend_alerts": len(alerts)}
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(name="snapshot_tracked_shops")
+def snapshot_tracked_shops_task() -> dict:
+    """Ежедневный ре-снимок магазинов-конкурентов, по которым хоть раз запускали
+    /shop — без этого тренд цены магазина никогда бы не появился, ведь после
+    первого ручного запроса больше никто не станет сам заново вызывать /shop
+    каждый день (см. app/services/pricing_intelligence.py: save_shop_snapshot,
+    get_tracked_shop_seller_ids)."""
+    import asyncio
+
+    from app.db.session import async_session_factory
+    from app.services.competitor_analysis import CompetitorAnalysisError, fetch_wb_shop
+    from app.services.pricing_intelligence import get_tracked_shop_seller_ids, save_shop_snapshot
+
+    async def _run() -> dict:
+        async with async_session_factory() as session:
+            seller_ids = await get_tracked_shop_seller_ids(session)
+
+            snapshotted = 0
+            for seller_id in seller_ids:
+                try:
+                    report = await fetch_wb_shop(seller_id)
+                except CompetitorAnalysisError:
+                    logging.getLogger(__name__).warning(
+                        "snapshot_tracked_shops: не удалось обновить магазин %s", seller_id, exc_info=True
+                    )
+                    continue
+                await save_shop_snapshot(session, seller_id, report)
+                snapshotted += 1
+
+            return {"shops_tracked": len(seller_ids), "snapshots_taken": snapshotted}
 
     return asyncio.run(_run())
 

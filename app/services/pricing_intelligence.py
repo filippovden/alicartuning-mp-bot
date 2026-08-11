@@ -21,8 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.models import CompetitorPriceSnapshot, Marketplace, Product
-from app.services.competitor_analysis import CompetitorAnalysisError, search_wb_competitors
+from app.db.models import CompetitorPriceSnapshot, Marketplace, Product, ShopSnapshot
+from app.services.competitor_analysis import CompetitorAnalysisError, CompetitorReport, search_wb_competitors
 
 MIN_SNAPSHOTS_FOR_TREND = 3
 TREND_SIGNIFICANT_PCT = 5.0
@@ -64,7 +64,7 @@ class TrendAlert:
 async def snapshot_competitor_prices(session: AsyncSession, product: Product) -> CompetitorPriceSnapshot | None:
     """Снимает текущие цены конкурентов и сохраняет как точку истории. Вызывается
     как из периодической Celery-задачи, так и опортунистически при обращении к
-    /analytics или /competitors, чтобы данные начинали копиться сразу."""
+    /analytics или /market, чтобы данные начинали копиться сразу."""
     query = product.car_model or product.title
     if not query:
         return None
@@ -125,6 +125,64 @@ async def get_price_trend(session: AsyncSession, product_id: int, days: int = 30
         first_avg_price=first_price,
         last_avg_price=last_price,
     )
+
+
+async def save_shop_snapshot(session: AsyncSession, seller_id: str, report: CompetitorReport) -> ShopSnapshot:
+    """Сохраняет снимок магазина-конкурента (/shop) — история копится с момента
+    первого запроса, ретроактивных данных по чужому магазину не бывает."""
+    snapshot = ShopSnapshot(
+        marketplace=Marketplace.WB,
+        seller_id=seller_id,
+        item_count=len(report.items),
+        avg_price=report.average_price,
+        min_price=report.min_price,
+        max_price=report.max_price,
+        avg_rating=report.average_rating,
+        total_feedbacks=report.total_feedbacks,
+    )
+    session.add(snapshot)
+    await session.commit()
+    await session.refresh(snapshot)
+    return snapshot
+
+
+async def get_shop_price_trend(session: AsyncSession, seller_id: str) -> PriceTrend:
+    """Тренд средней цены магазина-конкурента за всё время наблюдения (не за
+    последние N дней, как get_price_trend — здесь просто нет данных раньше
+    первого запроса /shop, поэтому берём всю накопленную историю)."""
+    stmt = select(ShopSnapshot).where(ShopSnapshot.seller_id == seller_id).order_by(ShopSnapshot.captured_at.asc())
+    snapshots = list((await session.execute(stmt)).scalars().all())
+
+    if len(snapshots) < 2:
+        return PriceTrend(direction="unknown", change_pct=None, snapshots_count=len(snapshots))
+
+    first_price = float(snapshots[0].avg_price) if snapshots[0].avg_price else None
+    last_price = float(snapshots[-1].avg_price) if snapshots[-1].avg_price else None
+    if not first_price or not last_price:
+        return PriceTrend(direction="unknown", change_pct=None, snapshots_count=len(snapshots))
+
+    change_pct = round((last_price - first_price) / first_price * 100, 2)
+    if change_pct > TREND_SIGNIFICANT_PCT:
+        direction = "up"
+    elif change_pct < -TREND_SIGNIFICANT_PCT:
+        direction = "down"
+    else:
+        direction = "flat"
+
+    return PriceTrend(
+        direction=direction,
+        change_pct=change_pct,
+        snapshots_count=len(snapshots),
+        first_avg_price=first_price,
+        last_avg_price=last_price,
+    )
+
+
+async def get_tracked_shop_seller_ids(session: AsyncSession) -> list[str]:
+    """ID всех магазинов, по которым хоть раз запускали /shop — список для
+    ежедневного ре-снимка в Celery (см. snapshot_tracked_shops)."""
+    stmt = select(ShopSnapshot.seller_id).distinct()
+    return list((await session.execute(stmt)).scalars().all())
 
 
 def analyze_demand_by_weekday(revenue_by_date: dict[str, float]) -> DemandPattern:

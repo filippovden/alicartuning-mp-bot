@@ -4,7 +4,8 @@ import httpx
 import pytest
 import respx
 
-from app.db.models import CompetitorPriceSnapshot, Marketplace, Product, User
+from app.db.models import CompetitorPriceSnapshot, Marketplace, Product, ShopSnapshot, User
+from app.services.competitor_analysis import CompetitorItem, CompetitorReport
 from app.services.pricing_intelligence import (
     MIN_SNAPSHOTS_FOR_TREND,
     analyze_demand_by_weekday,
@@ -13,6 +14,9 @@ from app.services.pricing_intelligence import (
     check_significant_price_trends,
     format_trend_digest,
     get_price_trend,
+    get_shop_price_trend,
+    get_tracked_shop_seller_ids,
+    save_shop_snapshot,
     snapshot_competitor_prices,
 )
 
@@ -289,3 +293,94 @@ def test_format_trend_digest_lists_all_alerts_with_direction_arrows():
     assert "📈" in text
     assert "📉" in text
     assert "/analytics" in text
+
+
+# --- Снимки магазинов-конкурентов (/shop) ---------------------------------------
+
+
+async def _add_shop_snapshot(session, seller_id: str, avg_price: float, days_ago: int) -> ShopSnapshot:
+    snapshot = ShopSnapshot(
+        marketplace=Marketplace.WB,
+        seller_id=seller_id,
+        item_count=10,
+        avg_price=avg_price,
+        min_price=avg_price - 50,
+        max_price=avg_price + 50,
+        avg_rating=4.5,
+        total_feedbacks=100,
+        captured_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
+    )
+    session.add(snapshot)
+    await session.commit()
+    return snapshot
+
+
+@pytest.mark.asyncio
+async def test_save_shop_snapshot_creates_row(session):
+    report = CompetitorReport(
+        query="12345",
+        items=[
+            CompetitorItem(name="a", price=1000, rating=4.5, feedbacks=10),
+            CompetitorItem(name="b", price=1200, rating=4.0, feedbacks=20),
+        ],
+    )
+    snapshot = await save_shop_snapshot(session, "12345", report)
+
+    assert snapshot.seller_id == "12345"
+    assert snapshot.item_count == 2
+    assert float(snapshot.avg_price) == 1100.0
+    assert float(snapshot.avg_rating) == 4.25
+    assert snapshot.total_feedbacks == 30
+
+
+@pytest.mark.asyncio
+async def test_get_shop_price_trend_unknown_with_single_snapshot(session):
+    await _add_shop_snapshot(session, "111", 1000, days_ago=0)
+
+    trend = await get_shop_price_trend(session, "111")
+
+    assert trend.direction == "unknown"
+    assert trend.snapshots_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_shop_price_trend_detects_up(session):
+    await _add_shop_snapshot(session, "222", 1000, days_ago=5)
+    await _add_shop_snapshot(session, "222", 1200, days_ago=0)
+
+    trend = await get_shop_price_trend(session, "222")
+
+    assert trend.direction == "up"
+    assert trend.change_pct == 20.0
+    assert trend.snapshots_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_shop_price_trend_detects_down(session):
+    await _add_shop_snapshot(session, "333", 1200, days_ago=5)
+    await _add_shop_snapshot(session, "333", 1000, days_ago=0)
+
+    trend = await get_shop_price_trend(session, "333")
+
+    assert trend.direction == "down"
+
+
+@pytest.mark.asyncio
+async def test_get_shop_price_trend_flat_within_threshold(session):
+    await _add_shop_snapshot(session, "444", 1000, days_ago=5)
+    await _add_shop_snapshot(session, "444", 1010, days_ago=0)
+
+    trend = await get_shop_price_trend(session, "444")
+
+    assert trend.direction == "flat"
+
+
+@pytest.mark.asyncio
+async def test_get_tracked_shop_seller_ids_returns_distinct_ids(session):
+    await _add_shop_snapshot(session, "555", 1000, days_ago=1)
+    await _add_shop_snapshot(session, "555", 1050, days_ago=0)
+    await _add_shop_snapshot(session, "666", 2000, days_ago=0)
+
+    ids = await get_tracked_shop_seller_ids(session)
+
+    assert set(ids) == {"555", "666"}

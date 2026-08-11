@@ -13,12 +13,15 @@ API не даёт доступа к чужим карточкам. `search_ozon_
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 
 import httpx
 
 WB_SEARCH_URL = "https://search.wb.ru/exactmatch/ru/common/v9/search"
+WB_SELLER_CATALOG_URL = "https://catalog.wb.ru/sellers/catalog"
+WB_SELLER_LINK_RE = re.compile(r"seller/(\d+)")
 
 STOPWORDS = {"для", "с", "и", "на", "в", "от", "по", "к", "из", "или", "не", "без", "под"}
 
@@ -55,6 +58,16 @@ class CompetitorReport:
     def max_price(self) -> float | None:
         prices = [i.price for i in self.items if i.price]
         return max(prices) if prices else None
+
+    @property
+    def average_rating(self) -> float | None:
+        ratings = [i.rating for i in self.items if i.rating]
+        return round(sum(ratings) / len(ratings), 2) if ratings else None
+
+    @property
+    def total_feedbacks(self) -> int | None:
+        feedbacks = [i.feedbacks for i in self.items if i.feedbacks]
+        return sum(feedbacks) if feedbacks else None
 
     def top_keywords(self, limit: int = 10) -> list[str]:
         counter: Counter[str] = Counter()
@@ -116,6 +129,59 @@ async def search_wb_competitors(query: str, limit: int = 20, exclude_brand: str 
             break
 
     return CompetitorReport(query=query, items=items)
+
+
+def parse_wb_seller_id(text: str) -> str | None:
+    """Достаёт ID продавца из ссылки на магазин WB (wildberries.ru/seller/12345)
+    или принимает сам числовой ID, если прислали его напрямую."""
+    text = text.strip()
+    match = WB_SELLER_LINK_RE.search(text)
+    if match:
+        return match.group(1)
+    if text.isdigit():
+        return text
+    return None
+
+
+async def fetch_wb_shop(seller_id: str, max_pages: int = 3, limit: int = 100) -> CompetitorReport:
+    """Собирает ассортимент магазина-конкурента на WB по ID продавца (best-effort,
+    как и search_wb_competitors — тот же неофициальный публичный API витрины,
+    catalog.wb.ru, а не Seller API: доступа к чужому личному кабинету через
+    официальный API не бывает, поэтому обёрнуто в те же понятные ошибки)."""
+    items: list[CompetitorItem] = []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for page in range(1, max_pages + 1):
+                params = {"dest": -1257786, "supplier": seller_id, "curr": "rub", "spp": 30, "page": page}
+                response = await client.get(WB_SELLER_CATALOG_URL, params=params)
+                response.raise_for_status()
+                payload = response.json()
+                products = payload.get("data", {}).get("products", [])
+                if not products:
+                    break
+                for p in products:
+                    price_kopecks = p.get("salePriceU") or p.get("priceU")
+                    price = price_kopecks / 100 if price_kopecks else None
+                    items.append(
+                        CompetitorItem(
+                            name=p.get("name", ""),
+                            price=price,
+                            brand=p.get("brand"),
+                            rating=p.get("reviewRating") or p.get("rating"),
+                            feedbacks=p.get("feedbacks"),
+                        )
+                    )
+                    if len(items) >= limit:
+                        break
+                if len(items) >= limit:
+                    break
+    except httpx.HTTPError as exc:
+        raise CompetitorAnalysisError(f"Не удалось получить данные магазина WB: {exc}") from exc
+
+    if not items:
+        raise CompetitorAnalysisError("По этой ссылке не нашлось товаров — проверьте ссылку на магазин WB.")
+
+    return CompetitorReport(query=seller_id, items=items)
 
 
 async def search_ozon_competitors(query: str, limit: int = 20) -> CompetitorReport:
