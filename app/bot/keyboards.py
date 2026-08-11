@@ -139,14 +139,6 @@ def photos_done_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def products_list_kb(products: list[tuple[int, str]]) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for product_id, label in products:
-        builder.button(text=label, callback_data=f"show:{product_id}")
-    builder.adjust(1)
-    return builder.as_markup()
-
-
 def skip_kb(field: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Пропустить", callback_data=f"skip:{field}")

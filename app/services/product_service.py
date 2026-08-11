@@ -280,24 +280,20 @@ class ProductService:
 
         При заданном XAI_API_KEY использует настоящую AI-генерацию изображения
         через Grok Imagine (app/services/ai/grok_imagine.py) по промпту,
-        собранному из буллетов Claude. Без ключа или при сбое API — fallback на
-        MVP-рендер Pillow (текст на белом фоне, app/services/image_pipeline.py),
-        бот не падает."""
+        собранному из буллетов. Без ключа или при сбое API — fallback на
+        MVP-рендер Pillow (текст на белом фоне, app/services/image_pipeline.py).
+
+        Буллеты сперва пытаемся получить через Claude, но недоступность
+        Anthropic не должна ронять инфографику целиком — при любом сбое
+        собираем их из уже заполненных полей товара (см. _safe_generate_bullets).
+        Итоговый Pillow-путь работает без единого обращения к Anthropic."""
         from app.services.storage import save_bytes
 
         product = await self.get_product(product_id)
         if product is None:
             raise ValueError(f"Товар {product_id} не найден")
 
-        draft = ProductDraft(
-            category=product.category.name if product.category else "",
-            draft_title=product.title or "",
-            car_model=product.car_model or "",
-            color=product.color or "",
-            material=product.material or "",
-            package_contents=product.package_contents or "",
-        )
-        bullets = await self.ai_service.generate_bullets(product.title or "", draft)
+        bullets = await self._safe_generate_bullets(product)
 
         created: list[Image] = []
         for i in range(count):
@@ -307,15 +303,62 @@ class ProductService:
             created.append(image)
         return created
 
+    async def _safe_generate_bullets(self, product: Product) -> list[str]:
+        draft = ProductDraft(
+            category=product.category.name if product.category else "",
+            draft_title=product.title or "",
+            car_model=product.car_model or "",
+            color=product.color or "",
+            material=product.material or "",
+            package_contents=product.package_contents or "",
+        )
+        try:
+            bullets = await self.ai_service.generate_bullets(product.title or "", draft)
+            if bullets:
+                return bullets
+        except Exception as exc:
+            # Логируем только текст ошибки (не exc_info) — traceback, задержавшийся
+            # в памяти дольше except-блока, ломает видимость последующих
+            # async-запросов в той же сессии SQLAlchemy.
+            error_text = str(exc)
+            logger.warning(
+                "Не удалось получить буллеты для инфографики товара %s через AI (%s) — "
+                "собираю их из полей товара без обращения к Anthropic",
+                product.id,
+                error_text,
+            )
+
+        return self._fallback_bullets(product)
+
+    @staticmethod
+    def _fallback_bullets(product: Product) -> list[str]:
+        """Буллеты из уже заполненных полей товара — без единого запроса к AI,
+        чтобы недоступность Anthropic не блокировала инфографику совсем."""
+        candidates = [
+            f"Материал: {product.material}" if product.material else None,
+            f"Цвет: {product.color}" if product.color else None,
+            f"Подходит для {product.car_model}" if product.car_model else None,
+            product.package_contents,
+        ]
+        bullets = [c for c in candidates if c]
+        while len(bullets) < 3:
+            bullets.append(f"Качество {product.brand or settings.brand_name}")
+        return bullets
+
     async def _render_infographic(self, product: Product, bullets: list[str]) -> bytes:
         if settings.xai_api_key:
             try:
                 return await self._render_infographic_via_grok(product, bullets)
-            except MarketplaceAPIError:
+            except Exception as exc:
+                # Любой сбой Grok (сеть, лимиты, неожиданный формат ответа) —
+                # переходим на Pillow, а не роняем инфографику целиком. Логируем
+                # только текст ошибки (не exc_info) — traceback, задержавшийся в
+                # памяти дольше except-блока, ломает видимость последующих
+                # async-запросов в той же сессии SQLAlchemy (см. _safe_generate_bullets).
                 logger.warning(
-                    "Grok Imagine недоступен для товара %s — использую Pillow-fallback для инфографики",
+                    "Grok Imagine недоступен для товара %s (%s) — использую Pillow-fallback для инфографики",
                     product.id,
-                    exc_info=True,
+                    str(exc),
                 )
 
         from app.services import image_pipeline

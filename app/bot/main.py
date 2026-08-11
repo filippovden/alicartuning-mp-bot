@@ -55,6 +55,10 @@ async def main() -> None:
     dp.include_router(reviews.router)
     dp.include_router(list_products.router)
     dp.include_router(clone_product.router)
+    # common.fallback_router — САМЫЙ ПОСЛЕДНИЙ: ловит callback-кнопки, которые не
+    # подошли ни одному из хендлеров выше (устаревшая кнопка/не тот шаг диалога),
+    # чтобы пользователь получал понятный ответ, а не тишину (раздел 2 ТЗ).
+    dp.include_router(common.fallback_router)
 
     logger.info("Бот ALICARTUNING запущен, начинаю polling...")
     try:

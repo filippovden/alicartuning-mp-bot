@@ -54,7 +54,7 @@ async def _fake_bullets(self, title, draft):
 
 
 @pytest.mark.asyncio
-async def test_gengraphic_without_key_uses_fallback_wording_and_sends_photo(session, monkeypatch):
+async def test_gengraphic_without_key_sends_photo(session, monkeypatch):
     monkeypatch.setattr(settings, "xai_api_key", "")
     monkeypatch.setattr(AIContentService, "generate_bullets", _fake_bullets)
 
@@ -63,7 +63,6 @@ async def test_gengraphic_without_key_uses_fallback_wording_and_sends_photo(sess
 
     await generate_graphic(callback, service)
 
-    assert any("XAI_API_KEY не задан" in t for t in callback.message.answered)
     assert len(callback.message.answered_photos) == 1
     _, caption = callback.message.answered_photos[0]
     assert caption == "✅ Инфографика добавлена к карточке."
@@ -90,12 +89,16 @@ async def test_gengraphic_with_key_uses_grok_wording_and_sends_photo(session, mo
 
 @pytest.mark.asyncio
 async def test_gengraphic_shows_clear_error_on_unexpected_failure(session, monkeypatch):
-    monkeypatch.setattr(settings, "xai_api_key", "")
+    """Буллеты теперь падают в fallback (не роняют инфографику), поэтому чтобы
+    проверить обработку реального сбоя, ломаем сам product_service.generate_infographic_images —
+    хендлер должен показать короткий понятный текст, а не стектрейс, и не отправлять фото."""
 
-    async def failing_bullets(self, title, draft):
-        raise RuntimeError("AI недоступен")
+    async def failing_generate_infographic_images(self, product_id, count=1):
+        raise RuntimeError("неожиданный сбой сервиса")
 
-    monkeypatch.setattr(AIContentService, "generate_bullets", failing_bullets)
+    monkeypatch.setattr(
+        ProductService, "generate_infographic_images", failing_generate_infographic_images
+    )
 
     service, product_id = await _make_product(session)
     callback = _FakeCallback(f"gengraphic:{product_id}")
@@ -103,4 +106,49 @@ async def test_gengraphic_shows_clear_error_on_unexpected_failure(session, monke
     await generate_graphic(callback, service)
 
     assert any("Не удалось сгенерировать инфографику" in t for t in callback.message.answered)
+    assert callback.message.answered_photos == []
+
+
+class _FakeStorageFile:
+    def __init__(self, path: str):
+        self.path = path
+
+
+class _FakeImage:
+    def __init__(self, image_id: int, path: str):
+        self.id = image_id
+        self.storage_file = _FakeStorageFile(path)
+
+
+class _FakeProduct:
+    def __init__(self, images: list[_FakeImage]):
+        self.images = images
+
+
+@pytest.mark.asyncio
+async def test_gengraphic_reports_missing_file_instead_of_crashing(session, monkeypatch, tmp_path):
+    """Раздел 4 ТЗ: если storage_file.path есть в БД, но файла нет на диске
+    (например, volume очищен) — хендлер не должен падать на Path.read_bytes,
+    а обязан явно сообщить, что файл не найден, и не пытаться отправить фото."""
+    monkeypatch.setattr(settings, "xai_api_key", "")
+
+    service, product_id = await _make_product(session)
+
+    missing_path = str(tmp_path / "does-not-exist.png")
+    fake_image = _FakeImage(image_id=999, path=missing_path)
+
+    async def fake_generate_infographic_images(self, product_id, count=1):
+        return [fake_image]
+
+    async def fake_get_product(self, product_id):
+        return _FakeProduct(images=[fake_image])
+
+    monkeypatch.setattr(ProductService, "generate_infographic_images", fake_generate_infographic_images)
+    monkeypatch.setattr(ProductService, "get_product", fake_get_product)
+
+    callback = _FakeCallback(f"gengraphic:{product_id}")
+
+    await generate_graphic(callback, service)
+
+    assert any("не найден на диске" in t for t in callback.message.answered)
     assert callback.message.answered_photos == []

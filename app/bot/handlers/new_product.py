@@ -437,22 +437,22 @@ async def process_images(callback: CallbackQuery, product_service) -> None:
 
 @router.callback_query(F.data.startswith("gengraphic:"))
 async def generate_graphic(callback: CallbackQuery, product_service) -> None:
+    """Кнопка «🎨 Инфографика» — раздел 1/4 (Senior Backend): вся цепочка
+    (буллеты → Grok Imagine → Pillow) обёрнута так, чтобы недоступность любого
+    внешнего сервиса не оставляла пользователя без ответа и без stacktrace."""
     product_id = int(callback.data.split(":")[1])
-    await callback.answer("Генерирую инфографику...")
+    await callback.answer()
 
     if settings.xai_api_key:
         await callback.message.answer("⏳ Генерирую инфографику через Grok Imagine...")
     else:
-        await callback.message.answer(
-            "⏳ Генерирую инфографику (XAI_API_KEY не задан — использую базовый рендер "
-            "буллетов на фоне, см. README про AI-инфографику)..."
-        )
+        await callback.message.answer("⏳ Генерирую инфографику...")
 
     try:
         images = await product_service.generate_infographic_images(product_id)
-    except Exception as exc:
+    except Exception:
         logger.warning("Не удалось сгенерировать инфографику для товара %s", product_id, exc_info=True)
-        await callback.message.answer(f"⚠️ Не удалось сгенерировать инфографику: {exc}")
+        await callback.message.answer("⚠️ Не удалось сгенерировать инфографику. Попробуйте ещё раз чуть позже.")
         return
 
     if not images:
@@ -463,16 +463,21 @@ async def generate_graphic(callback: CallbackQuery, product_service) -> None:
     created_ids = {img.id for img in images}
     stored = [img for img in product.images if img.id in created_ids and img.storage_file]
 
+    photo_bytes = None
     if stored:
         from pathlib import Path
 
-        photo_bytes = Path(stored[-1].storage_file.path).read_bytes()
+        source_path = Path(stored[-1].storage_file.path)
+        if source_path.exists():
+            photo_bytes = source_path.read_bytes()
+
+    if photo_bytes is not None:
         await callback.message.answer_photo(
             BufferedInputFile(photo_bytes, filename="infographic.png"),
             caption="✅ Инфографика добавлена к карточке.",
         )
     else:
-        await callback.message.answer(f"✅ Готово: {len(images)} изображение(й) добавлено к товару.")
+        await callback.message.answer("⚠️ Файл инфографики не найден на диске.")
 
 
 @router.callback_query(F.data.startswith("publish:"))

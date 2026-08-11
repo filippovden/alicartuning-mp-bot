@@ -124,6 +124,72 @@ async def test_falls_back_to_pillow_when_grok_fails(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_falls_back_to_pillow_when_grok_raises_unexpected_exception(session, monkeypatch):
+    """Раньше _render_infographic ловил только MarketplaceAPIError — любая другая
+    ошибка Grok (сеть, неожиданный формат ответа) роняла инфографику целиком."""
+    monkeypatch.setattr(settings, "xai_api_key", "test-key")
+    monkeypatch.setattr(AIContentService, "generate_bullets", _fake_bullets)
+
+    async def failing_grok_generate(self, prompt, **kwargs):
+        raise RuntimeError("неожиданный сбой, не MarketplaceAPIError")
+
+    monkeypatch.setattr(GrokImagineClient, "generate_infographic", failing_grok_generate)
+
+    service, product_id = await _make_product(session)
+    images = await service.generate_infographic_images(product_id, count=1)
+
+    assert len(images) == 1
+    assert images[0].image_type == ImageType.INFOGRAPHIC
+
+
+@pytest.mark.asyncio
+async def test_fallback_bullets_used_when_ai_bullets_generation_fails(session, monkeypatch):
+    """Раздел 1 ТЗ: сбой Claude при генерации буллетов не должен ронять
+    инфографику — буллеты собираются из полей товара без обращения к AI."""
+    monkeypatch.setattr(settings, "xai_api_key", "")
+
+    async def failing_bullets(self, title, draft):
+        raise RuntimeError("Anthropic недоступен")
+
+    monkeypatch.setattr(AIContentService, "generate_bullets", failing_bullets)
+
+    service, product_id = await _make_product(session)
+    bullets = await service._safe_generate_bullets(await service.get_product(product_id))
+
+    assert len(bullets) >= 3
+    joined = " ".join(bullets)
+    assert "ABS-пластик" in joined or "Чёрный глянец" in joined or "Vesta" in joined
+
+    images = await service.generate_infographic_images(product_id, count=1)
+    assert len(images) == 1
+    assert images[0].image_type == ImageType.INFOGRAPHIC
+
+
+@pytest.mark.asyncio
+async def test_infographic_works_without_any_ai_keys(session, monkeypatch):
+    """Приёмочный сценарий: без ANTHROPIC (буллеты падают) и без XAI_API_KEY —
+    инфографика всё равно возвращает валидные PNG-байты через чистый Pillow."""
+    monkeypatch.setattr(settings, "xai_api_key", "")
+
+    async def failing_bullets(self, title, draft):
+        raise RuntimeError("нет ключа Anthropic")
+
+    monkeypatch.setattr(AIContentService, "generate_bullets", failing_bullets)
+
+    service, product_id = await _make_product(session)
+    images = await service.generate_infographic_images(product_id, count=1)
+
+    assert len(images) == 1
+    product = await service.get_product(product_id)
+    infographic = next(img for img in product.images if img.image_type == ImageType.INFOGRAPHIC)
+
+    from pathlib import Path
+
+    png_bytes = Path(infographic.storage_file.path).read_bytes()
+    assert png_bytes.startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
 async def test_generates_requested_count_of_images(session, monkeypatch):
     monkeypatch.setattr(settings, "xai_api_key", "")
     monkeypatch.setattr(AIContentService, "generate_bullets", _fake_bullets)

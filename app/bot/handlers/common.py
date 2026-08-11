@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
 from app.bot.handlers import analytics, list_products, reviews
@@ -98,3 +98,27 @@ async def menu_analytics(message: Message, product_service, session) -> None:
 @router.message(F.text == MENU_MORE)
 async def menu_more(message: Message) -> None:
     await message.answer(texts.MORE_MENU)
+
+
+# --- Fallback на «мёртвые» кнопки (Senior Backend, п.2 ТЗ) ------------------------
+#
+# Этот роутер подключается В main.py ПОСЛЕДНИМ (после всех остальных), поэтому
+# срабатывает только если ни один другой хендлер не забрал callback — то есть
+# кнопка устарела (осталась от старого сообщения) или не подходит текущему
+# состоянию FSM. Раньше в этом случае бот молчал: aiogram просто не находил
+# хендлер и apdate не обрабатывался, пользователь не понимал, нажалось ли
+# вообще. Порядок хендлеров внутри роутера важен: сначала конкретные случаи
+# (photos_done — самая частая протухшая кнопка), потом общий catch-all.
+fallback_router = Router(name="common_fallback")
+
+
+@fallback_router.callback_query(F.data == "photos_done")
+async def photos_done_wrong_state(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(texts.PHOTOS_NOT_ACTIVE)
+
+
+@fallback_router.callback_query()
+async def unhandled_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer(texts.STALE_BUTTON)
