@@ -22,6 +22,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    """SQLAlchemy Enum(...) по умолчанию отправляет в БД .name члена (например,
+    "DRAFT"), а не .value ("draft") — а Postgres-типы созданы alembic-миграциями
+    именно со значениями (values). Без этого callable любой INSERT/UPDATE в
+    enum-колонку падает на реальном Postgres с "invalid input value for enum".
+    Тесты на SQLite бага не ловят: там CHECK-ограничение строится по той же
+    (ошибочной) логике, что и сам insert, поэтому расхождение с отдельно
+    созданным Postgres-типом никогда не проявляется."""
+    return [member.value for member in enum_cls]
+
+
 class ProductStatus(str, enum.Enum):
     DRAFT = "draft"
     READY = "ready"
@@ -96,7 +107,7 @@ class CategoryAttr(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"))
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), nullable=False)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), nullable=False)
     external_attr_id: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     required: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -138,7 +149,7 @@ class Product(Base):
     height_mm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_g: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    status: Mapped[ProductStatus] = mapped_column(Enum(ProductStatus), default=ProductStatus.DRAFT)
+    status: Mapped[ProductStatus] = mapped_column(Enum(ProductStatus, values_callable=_enum_values), default=ProductStatus.DRAFT)
 
     wb_nm_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ozon_product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -210,7 +221,7 @@ class Image(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
     storage_file_id: Mapped[int] = mapped_column(ForeignKey("storage_files.id"))
-    image_type: Mapped[ImageType] = mapped_column(Enum(ImageType), default=ImageType.MAIN)
+    image_type: Mapped[ImageType] = mapped_column(Enum(ImageType, values_callable=_enum_values), default=ImageType.MAIN)
     position: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -226,8 +237,8 @@ class PublishLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), nullable=False)
-    status: Mapped[PublishStatus] = mapped_column(Enum(PublishStatus), nullable=False)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), nullable=False)
+    status: Mapped[PublishStatus] = mapped_column(Enum(PublishStatus, values_callable=_enum_values), nullable=False)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -289,13 +300,13 @@ class Review(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), nullable=False)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), nullable=False)
     external_review_id: Mapped[str] = mapped_column(String(128), nullable=False)
     sku: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sentiment: Mapped[ReviewSentiment | None] = mapped_column(Enum(ReviewSentiment), nullable=True)
+    sentiment: Mapped[ReviewSentiment | None] = mapped_column(Enum(ReviewSentiment, values_callable=_enum_values), nullable=True)
     is_answered: Mapped[bool] = mapped_column(Boolean, default=False)
     reply_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -314,7 +325,7 @@ class CompetitorPriceSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     query: Mapped[str] = mapped_column(String(255), nullable=False)
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), default=Marketplace.WB)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), default=Marketplace.WB)
     avg_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     min_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     max_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
@@ -334,7 +345,7 @@ class ShopSnapshot(Base):
     __tablename__ = "shop_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace), default=Marketplace.WB)
+    marketplace: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), default=Marketplace.WB)
     seller_id: Mapped[str] = mapped_column(String(64), index=True)
     item_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
