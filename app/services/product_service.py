@@ -372,7 +372,8 @@ class ProductService:
 
     async def _render_one_infographic(self, product: Product, bullets: list[str], variant: str) -> bytes:
         """Один кадр инфографики для заданного варианта (material/fit). Цепочка:
-        Grok edit по референс-фото → Grok generate без референса → Pillow —
+        Grok edit по референс-фото → Grok generate без референса → Pillow с
+        настоящим фото товара (если есть локальный файл) → Pillow только текст —
         каждый шаг best-effort, ни один сбой не должен всплыть наружу."""
         if settings.xai_api_key:
             grok_bytes = await self._try_grok_render(product, bullets, variant)
@@ -381,7 +382,12 @@ class ProductService:
 
         from app.services import image_pipeline
 
-        return image_pipeline.generate_infographic(bullets, title=product.brand or settings.brand_name)
+        title = product.brand or settings.brand_name
+        local_photo = self._main_photo_local_path(product)
+        if local_photo is not None:
+            return image_pipeline.generate_infographic_with_product(local_photo.read_bytes(), bullets, title=title)
+
+        return image_pipeline.generate_infographic(bullets, title=title)
 
     async def _try_grok_render(self, product: Product, bullets: list[str], variant: str) -> bytes | None:
         from app.services.ai.grok_imagine import GrokImagineClient
@@ -452,6 +458,23 @@ class ProductService:
         url = photo.storage_file.url
         if url and url.startswith(("http://", "https://")):
             return url
+        return None
+
+    @staticmethod
+    def _main_photo_local_path(product: Product):
+        """Главное фото товара как локальный файл на диске — источник для
+        Pillow-инфографики с настоящим товаром (в отличие от
+        _main_photo_public_url, который ищет http(s)-ссылку для референса
+        Grok). save_bytes всегда пишет файл локально, даже когда настроен S3
+        (раздел 5 ТЗ v3) — поэтому путь есть даже без публичного URL."""
+        from pathlib import Path
+
+        main_images = [img for img in product.images if img.image_type == ImageType.MAIN]
+        for img in sorted(main_images, key=lambda img: img.position):
+            if img.storage_file and img.storage_file.path:
+                path = Path(img.storage_file.path)
+                if path.exists():
+                    return path
         return None
 
     # --- AI-контент ---------------------------------------------------
@@ -564,18 +587,18 @@ class ProductService:
                 product,
                 Marketplace.WB,
                 PublishStatus.ERROR,
-                message=(
-                    "Карточка отправлена в WB, но nmID не подтверждён за отведённое "
-                    "время — проверьте позже в личном кабинете WB."
-                ),
+                message="карточка отправлена, ID ещё не пришёл. Проверь кабинет WB через пару минут.",
             )
 
         product.wb_nm_id = str(nm_id)
 
+        # Только товарные фото (MAIN) — инфографика/лайфстайл-кадры не должны
+        # затирать или разбавлять основные фото карточки на WB (раздел 3 ТЗ v3).
         image_urls = [
             image.storage_file.url
             for image in sorted(product.images, key=lambda img: img.position)
-            if image.storage_file
+            if image.image_type == ImageType.MAIN
+            and image.storage_file
             and image.storage_file.url
             and image.storage_file.url.startswith(("http://", "https://"))
         ]
@@ -584,11 +607,9 @@ class ProductService:
             from app.services.storage import s3_configured
 
             reason = (
-                "текущее хранилище отдаёт локальный путь к файлу, а не публичный "
-                "http(s) URL, который требует WB. Настройте S3-совместимое "
-                "хранилище (STORAGE_BACKEND=s3 + S3_* в .env)."
+                "нужен S3 (STORAGE_BACKEND=s3). Текст карточки на площадке есть, картинок нет."
                 if not s3_configured()
-                else "не нашлось ни одного файла с уже загруженным публичным URL."
+                else "нет публичной ссылки на файлы."
             )
             return await self._save_publish_log(
                 product,
@@ -596,7 +617,7 @@ class ProductService:
                 PublishStatus.PARTIAL,
                 status_code=200,
                 external_id=str(nm_id),
-                message=f"Карточка создана (nmID {nm_id}), но фото не загружены: {reason}",
+                message=f"карточка (ID {nm_id}), фото не ушли — {reason}",
             )
 
         try:
@@ -608,7 +629,7 @@ class ProductService:
                 PublishStatus.PARTIAL,
                 status_code=200,
                 external_id=str(nm_id),
-                message=f"Карточка создана (nmID {nm_id}), но фото не загрузились: {exc.message}",
+                message=f"карточка (ID {nm_id}), фото не ушли — ошибка загрузки: {exc.message}",
             )
 
         return await self._save_publish_log(
@@ -617,7 +638,7 @@ class ProductService:
             PublishStatus.SUCCESS,
             status_code=200,
             external_id=str(nm_id),
-            message=f"Карточка создана (nmID {nm_id}), загружено фото: {len(image_urls)}",
+            message=f"карточка (ID {nm_id}), фото: {len(image_urls)}",
         )
 
     async def _wait_for_wb_nm_id(
@@ -697,7 +718,7 @@ class ProductService:
                 Marketplace.OZON,
                 PublishStatus.ERROR,
                 message=(
-                    "У категории задан ozon_category_id, но не задан ozon_type_id — "
+                    "у категории задан ozon_category_id, но не задан ozon_type_id — "
                     "Ozon требует оба поля вместе. Донастройте категорию в /admin."
                 ),
             )
@@ -713,7 +734,7 @@ class ProductService:
                 status=PublishStatus.SUCCESS,
                 status_code=result.status_code,
                 external_id=result.external_id,
-                message="Задача импорта создана",
+                message=f"ID {result.external_id}",
             )
         except MarketplaceAPIError as exc:
             log = PublishLog(

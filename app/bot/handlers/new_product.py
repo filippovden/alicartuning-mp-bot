@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from io import BytesIO
@@ -326,8 +327,37 @@ async def step_weight(message: Message, state: FSMContext, product_service) -> N
     await message.answer(texts.step(13, "Фото") + texts.ASK_PHOTOS, reply_markup=photos_done_kb())
 
 
-@router.message(NewProductStates.photos, F.photo)
-async def step_photo(message: Message, state: FSMContext, product_service, session) -> None:
+ALBUM_DEBOUNCE_SECONDS = 0.8
+
+# Отложенные ответы «Фото получено (N)» на альбомы — по одному на (chat_id,
+# media_group_id), см. handle_incoming_photo.
+_album_debounce_tasks: dict[tuple[int, str], asyncio.Task] = {}
+
+
+async def _answer_photos_received(message: Message, state: FSMContext, delay: float = 0.0) -> None:
+    if delay:
+        await asyncio.sleep(delay)
+    data = await state.get_data()
+    photos = data.get("photos", [])
+    await message.answer(texts.PHOTO_RECEIVED.format(count=len(photos)), reply_markup=photos_done_kb())
+
+
+async def handle_incoming_photo(
+    message: Message,
+    state: FSMContext,
+    product_service,
+    session,
+    *,
+    debounce_seconds: float = ALBUM_DEBOUNCE_SECONDS,
+) -> None:
+    """Сохраняет пришедшее фото как главное и отвечает пользователю «Фото
+    получено (N)» (раздел 6 ТЗ v3, общая логика для пошагового и быстрого
+    режимов). Каждый кадр альбома (message.media_group_id задан) сохраняется
+    сразу — не теряем ни одного, но ответ пользователю шлём только один раз,
+    после последнего кадра: новый кадр того же альбома отменяет предыдущий
+    отложенный ответ и планирует новый (debounce). Раньше каждый кадр альбома
+    рождал свой ответ и клавиатуру — спамило и гоняло state.update_data
+    неатомарно. Одиночное фото (без media_group_id) отвечает сразу, как раньше."""
     data = await state.get_data()
     photo = message.photo[-1]
     file = await message.bot.get_file(photo.file_id)
@@ -339,10 +369,32 @@ async def step_photo(message: Message, state: FSMContext, product_service, sessi
     photos = data["photos"] + [storage_file.id]
     await state.update_data(photos=photos)
 
+    media_group_id = message.media_group_id
+    if media_group_id is None:
+        size_warning = _photo_size_warning(content)
+        if size_warning:
+            await message.answer(size_warning)
+        await _answer_photos_received(message, state)
+        return
+
+    # Варнинг о маленьком размере — максимум один на альбом, даже если
+    # несколько кадров одного альбома оказались маленькими.
+    warned_groups = data.get("warned_album_groups", [])
     size_warning = _photo_size_warning(content)
-    if size_warning:
+    if size_warning and media_group_id not in warned_groups:
         await message.answer(size_warning)
-    await message.answer(texts.PHOTO_RECEIVED.format(count=len(photos)), reply_markup=photos_done_kb())
+        await state.update_data(warned_album_groups=warned_groups + [media_group_id])
+
+    key = (message.chat.id, media_group_id)
+    existing_task = _album_debounce_tasks.get(key)
+    if existing_task is not None:
+        existing_task.cancel()
+    _album_debounce_tasks[key] = asyncio.create_task(_answer_photos_received(message, state, delay=debounce_seconds))
+
+
+@router.message(NewProductStates.photos, F.photo)
+async def step_photo(message: Message, state: FSMContext, product_service, session) -> None:
+    await handle_incoming_photo(message, state, product_service, session)
 
 
 @router.callback_query(F.data == "photos_done", NewProductStates.photos)
@@ -512,22 +564,7 @@ async def confirm_publish(callback: CallbackQuery, state: FSMContext, product_se
         await callback.message.answer(f"⚠️ {exc}")
         return
 
-    if summary.all_succeeded:
-        await callback.message.answer(
-            texts.publish_success(
-                summary.wb.external_id if summary.wb else None,
-                summary.ozon.external_id if summary.ozon else None,
-                summary.wb.message if summary.wb else None,
-                summary.ozon.message if summary.ozon else None,
-            )
-        )
-    else:
-        await callback.message.answer(
-            texts.publish_partial(
-                summary.wb.message if summary.wb else None,
-                summary.ozon.message if summary.ozon else None,
-            )
-        )
+    await callback.message.answer(texts.publish_result(summary.wb, summary.ozon))
     await state.clear()
 
 
@@ -543,16 +580,14 @@ async def _publish_one(product_service, product_id: int) -> tuple[bool, str]:
     except ValueError as exc:
         return False, str(exc)
 
-    if summary.all_succeeded:
-        parts = []
-        if summary.wb and summary.wb.external_id:
-            parts.append(f"WB: ID {summary.wb.external_id}")
-        if summary.ozon and summary.ozon.external_id:
-            parts.append(f"Ozon: ID {summary.ozon.external_id}")
-        return True, ", ".join(parts) or "опубликован"
+    parts = []
+    if summary.wb:
+        parts.append(f"WB: {summary.wb.message}")
+    if summary.ozon:
+        parts.append(f"Ozon: {summary.ozon.message}")
+    note = "; ".join(parts) or "опубликован"
 
-    notes = [m for m in (summary.wb.message if summary.wb else None, summary.ozon.message if summary.ozon else None) if m]
-    return False, "частично — " + "; ".join(notes)
+    return summary.all_succeeded, note
 
 
 @router.callback_query(F.data.startswith("publishall:"))

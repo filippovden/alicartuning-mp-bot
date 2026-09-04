@@ -2,6 +2,8 @@
 
 import html
 
+from app.db.models import PublishStatus
+
 WELCOME = (
     "ALICARTUNING — карточки для Wildberries и Ozon.\n\n"
     "Создавай товары, клонируй на другие модели Lada и публикуй из этого чата.\n\n"
@@ -125,33 +127,45 @@ def validation_errors(text: str) -> str:
     return f"⚠️ Карточку нельзя опубликовать, пока не исправлены проблемы:\n\n{text}"
 
 
-def publish_success(
-    wb_id: str | None,
-    ozon_id: str | None,
-    wb_message: str | None = None,
-    ozon_message: str | None = None,
-) -> str:
-    lines = ["✅ <b>Товар успешно опубликован:</b>"]
-    lines.append(_publish_success_line("Wildberries", wb_id, wb_message))
-    lines.append(_publish_success_line("Ozon", ozon_id, ozon_message))
-    return "\n".join(lines)
+def publish_result(wb_log, ozon_log) -> str:
+    """Единый экран после публикации (раздел 4.2 ТЗ v3): заголовок отражает
+    реальный исход — SUCCESS с фото не то же самое, что карточка без фото
+    (PARTIAL), поэтому «✅ Опубликовано» только когда обе площадки реально
+    закончили успехом. nmID/ID не дублируется в заголовке — он уже есть в
+    строке площадки (см. ProductService._publish_to_wb/_publish_to_ozon,
+    которые теперь сами формируют короткое человеческое message).
 
+    Принимает объекты PublishLog (или None, если площадка не публиковалась —
+    например, у категории не задан ozon_category_id)."""
+    logs = [log for log in (wb_log, ozon_log) if log is not None]
+    has_error = any(log.status == PublishStatus.ERROR for log in logs)
+    wb_partial = wb_log is not None and wb_log.status == PublishStatus.PARTIAL
 
-def _publish_success_line(marketplace: str, external_id: str | None, message: str | None) -> str:
-    if not external_id:
-        return f"• {marketplace}: —"
-    line = f"• {marketplace}: ID {external_id}"
-    if message:
-        line += f" ({message})"
-    return line
+    if has_error:
+        header = "⚠️ Публикация с ошибками"
+    elif wb_partial:
+        header = "⚠️ Карточка создана, фото не ушли"
+    elif logs and all(log.status == PublishStatus.SUCCESS for log in logs):
+        header = "✅ Опубликовано"
+    else:
+        header = "⚠️ Публикация с ошибками"
 
+    lines = [f"<b>{header}</b>", ""]
+    if wb_log is not None:
+        lines.append(f"WB: {wb_log.message or wb_log.status.value}")
+    if ozon_log is not None:
+        lines.append(f"Ozon: {ozon_log.message or ozon_log.status.value}")
 
-def publish_partial(wb_message: str | None, ozon_message: str | None) -> str:
-    lines = ["⚠️ <b>Публикация завершена с ошибками:</b>"]
-    if wb_message:
-        lines.append(f"• Wildberries: {wb_message}")
-    if ozon_message:
-        lines.append(f"• Ozon: {ozon_message}")
+    if wb_partial:
+        lines.append("")
+        lines.append("⚠️ Проверьте настройки S3 (хранилище фото) — без него площадка не получает картинки.")
+
+    if wb_log is not None:
+        lines.append("")
+        lines.append(
+            "Модерация WB придёт отдельным сообщением, когда карточка появится в каталоге — не жди её сразу."
+        )
+
     return "\n".join(lines)
 
 

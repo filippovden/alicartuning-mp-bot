@@ -17,18 +17,17 @@ from aiogram.types import CallbackQuery, Message
 from app.bot import texts
 from app.bot.handlers.new_product import (
     DIMENSIONS_RE,
-    _photo_size_warning,
+    handle_incoming_photo,
     render_preview,
     resume_state_for_product,
     try_generate_ai_content,
 )
-from app.bot.keyboards import photos_done_kb, quick_parse_failed_kb
+from app.bot.keyboards import quick_parse_failed_kb
 from app.bot.states import QuickCreateStates
 from app.config import settings
 from app.services.ai.client import AIContentGenerationError
 from app.services.category_search import ozon_cache_is_empty, search_ozon_categories, search_wb_categories
 from app.services.marketplaces.base import MarketplaceAPIError
-from app.services.storage import save_bytes
 
 logger = logging.getLogger(__name__)
 router = Router(name="quick_create")
@@ -54,21 +53,7 @@ async def start_quick_mode(callback: CallbackQuery, state: FSMContext, product_s
 
 @router.message(QuickCreateStates.photos, F.photo)
 async def quick_photo(message: Message, state: FSMContext, product_service, session) -> None:
-    data = await state.get_data()
-    photo = message.photo[-1]
-    file = await message.bot.get_file(photo.file_id)
-    buffer = await message.bot.download_file(file.file_path)
-    content = buffer.read()
-    storage_file = await save_bytes(session, content, filename=file.file_path, content_type="image/jpeg")
-    await product_service.add_image(data["product_id"], storage_file.id, image_type="main", position=len(data["photos"]))
-
-    photos = data["photos"] + [storage_file.id]
-    await state.update_data(photos=photos)
-
-    size_warning = _photo_size_warning(content)
-    if size_warning:
-        await message.answer(size_warning)
-    await message.answer(texts.PHOTO_RECEIVED.format(count=len(photos)), reply_markup=photos_done_kb())
+    await handle_incoming_photo(message, state, product_service, session)
 
 
 @router.message(QuickCreateStates.photos)

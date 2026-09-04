@@ -65,7 +65,7 @@ async def test_publish_to_wb_success_with_photos(session):
 
     assert log.status == PublishStatus.SUCCESS
     assert log.external_id == "555777"
-    assert "загружено фото: 1" in log.message
+    assert "фото: 1" in log.message
     assert product.wb_nm_id == "555777"
 
 
@@ -96,7 +96,7 @@ async def test_publish_to_wb_polls_until_nm_id_appears(session, monkeypatch):
     assert log.status == PublishStatus.PARTIAL
     assert product.wb_nm_id == "42"
     assert sleeps == [3.0]  # одна пауза перед тем, как nmID нашёлся на второй попытке
-    assert "фото не загружены" in log.message  # к товару не добавляли фото
+    assert "фото не ушли" in log.message  # к товару не добавляли фото
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_publish_to_wb_nm_id_never_appears(session, monkeypatch):
     log = await service._publish_to_wb(product)
 
     assert log.status == PublishStatus.ERROR
-    assert "не подтверждён" in log.message
+    assert "ID ещё не пришёл" in log.message
     assert product.wb_nm_id is None
     assert len(sleeps) == 11  # attempts=12 (settings.wb_nm_id_poll_attempts) → 11 пауз
     assert cards_route.call_count == 12
@@ -256,7 +256,7 @@ async def test_publish_to_wb_photo_upload_failure_is_not_blocking(session):
     # публикацию в ERROR (карточка живая), но и не полный SUCCESS — PARTIAL,
     # плюс пользователь обязан увидеть понятное сообщение.
     assert log.status == PublishStatus.PARTIAL
-    assert "но фото не загрузились" in log.message
+    assert "фото не ушли" in log.message
     assert "Файл повреждён" in log.message
     assert product.wb_nm_id == "999"
 
@@ -277,8 +277,8 @@ async def test_publish_to_wb_local_storage_has_no_public_url(session):
     log = await service._publish_to_wb(product)
 
     assert log.status == PublishStatus.PARTIAL
-    assert "фото не загружены" in log.message
-    assert "S3-совместимое" in log.message
+    assert "фото не ушли" in log.message
+    assert "нужен S3" in log.message
     assert product.wb_nm_id == "111"
 
 
@@ -308,5 +308,5 @@ async def test_publish_to_wb_no_public_url_with_s3_configured_gives_different_re
     log = await service._publish_to_wb(product)
 
     assert log.status == PublishStatus.PARTIAL
-    assert "не нашлось ни одного файла с уже загруженным публичным URL" in log.message
-    assert "Настройте S3" not in log.message
+    assert "нет публичной ссылки на файлы" in log.message
+    assert "нужен S3" not in log.message

@@ -132,6 +132,67 @@ def generate_infographic(
     return buffer.getvalue()
 
 
+def generate_infographic_with_product(
+    product_image_bytes: bytes,
+    bullets: list[str],
+    title: str | None = None,
+    size: tuple[int, int] = INFOGRAPHIC_SIZE,
+) -> bytes:
+    """Инфографика с настоящим фото товара (раздел 5 ТЗ v3) — в отличие от
+    generate_infographic (только текст на фоне), здесь по центру вписывается
+    реальное фото карточки, без обязательного rembg (просто по центру на
+    белом фоне, как compose_on_brand_background). Используется, когда нет
+    XAI_API_KEY (или Grok не смог сгенерировать), но у товара уже есть
+    локальный файл главного фото — так превью в чате не выглядит пустой
+    заглушкой без товара.
+
+    Если байты фото повреждены/нечитаемы — не роняем публикацию, а тихо
+    откатываемся на текстовую версию (generate_infographic)."""
+    try:
+        product = Image.open(io.BytesIO(product_image_bytes))
+        product.load()
+    except Exception as exc:
+        logger.warning("Не удалось открыть фото товара для инфографики (%s) — использую только текст", str(exc))
+        return generate_infographic(bullets, title, size=size)
+
+    if product.mode not in ("RGBA", "LA"):
+        product = product.convert("RGBA")
+
+    canvas = Image.new("RGB", size, BRAND_BG_COLOR)
+    draw = ImageDraw.Draw(canvas)
+
+    margin = int(size[0] * 0.08)
+    brand_zone_h = int(size[1] * 0.12)
+
+    if title:
+        title_font = _load_font(int(size[1] * 0.045))
+        draw.text((margin, margin), title, fill=BRAND_ACCENT_COLOR, font=title_font)
+    draw.line([(margin, brand_zone_h), (size[0] - margin, brand_zone_h)], fill=BRAND_ACCENT_COLOR, width=3)
+
+    photo_zone_top = brand_zone_h + int(size[1] * 0.03)
+    photo_zone_h = int(size[1] * 0.58)
+    photo_zone_w = size[0] - 2 * margin
+
+    fg_w, fg_h = product.size
+    scale = min(photo_zone_w / fg_w, photo_zone_h / fg_h) * 0.9
+    new_size = (max(1, int(fg_w * scale)), max(1, int(fg_h * scale)))
+    product = product.resize(new_size, Image.LANCZOS)
+
+    offset = ((size[0] - new_size[0]) // 2, photo_zone_top + (photo_zone_h - new_size[1]) // 2)
+    canvas.paste(product, offset, product)
+
+    bullet_font = _load_font(int(size[1] * 0.032))
+    line_height = int(size[1] * 0.09)
+    y = photo_zone_top + photo_zone_h + int(size[1] * 0.02)
+    for bullet in bullets[:3]:
+        _draw_bullet(draw, margin, y, bullet, bullet_font, size[0] - 2 * margin)
+        y += line_height
+
+    buffer = io.BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _draw_bullet(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font, max_width: int) -> None:
     badge_radius = 18
     draw.ellipse([(x, y), (x + 2 * badge_radius, y + 2 * badge_radius)], fill=BRAND_ACCENT_COLOR)

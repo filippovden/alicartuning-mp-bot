@@ -452,7 +452,9 @@ async def test_C_step_by_step_full_dialog_to_publish(session, monkeypatch):
 
             pub_cb = _FakeCallback(f"publish:{product_id}", user=user)
             await new_product.confirm_publish(pub_cb, state, service)
-            assert any("успешно опубликован" in t or "завершена с ошибками" in t for t in pub_cb.message.answered)
+            assert any(
+                "Опубликовано" in t or "фото не ушли" in t or "с ошибками" in t for t in pub_cb.message.answered
+            )
         except Exception as exc:  # noqa: BLE001
             failures.append(f"#{i}: {type(exc).__name__}: {exc}")
     _report(failures, "C. Пошаговый /new до публикации")

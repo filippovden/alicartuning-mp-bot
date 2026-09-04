@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.bot import texts
 from app.bot.handlers import common, list_products, new_product, quick_create
-from app.bot.states import QuickCreateStates
+from app.bot.states import NewProductStates, QuickCreateStates
 from app.db.models import Category, StorageFile
 from app.services.ai.client import AIContentGenerationError
 from app.services.product_service import ProductService
@@ -321,3 +321,169 @@ async def test_step_by_step_shows_progress_and_skips_brand_question(session):
     data = await state.get_data()
     product = await service.get_product(data["product_id"])
     assert product.brand == "ALICARTUNING"
+
+
+# --- Раздел 6 ТЗ v3: альбом фото — один ответ на группу, а не на каждый кадр ---
+
+
+class _FakePhotoSize:
+    def __init__(self, file_id: str):
+        self.file_id = file_id
+
+
+class _FakeTgFile:
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+
+
+class _FakeBot:
+    def __init__(self, image_size: tuple[int, int] = (900, 1200)):
+        self._image_size = image_size
+
+    async def get_file(self, file_id: str) -> _FakeTgFile:
+        return _FakeTgFile(file_path=f"{file_id}.jpg")
+
+    async def download_file(self, file_path: str):
+        import io
+
+        from PIL import Image as PILImage
+
+        buf = io.BytesIO()
+        PILImage.new("RGB", self._image_size, (10, 20, 30)).save(buf, format="JPEG")
+        buf.seek(0)
+        return buf
+
+
+class _FakeChat:
+    def __init__(self, chat_id: int):
+        self.id = chat_id
+
+
+class _FakePhotoMessage:
+    def __init__(
+        self,
+        file_id: str,
+        chat_id: int = 1,
+        media_group_id: str | None = None,
+        image_size: tuple[int, int] = (900, 1200),
+    ):
+        self.photo = [_FakePhotoSize(file_id)]
+        self.bot = _FakeBot(image_size=image_size)
+        self.chat = _FakeChat(chat_id)
+        self.media_group_id = media_group_id
+        self.answered: list[tuple[str, object]] = []
+
+    async def answer(self, text: str, reply_markup=None, **kwargs) -> "_FakePhotoMessage":
+        self.answered.append((text, reply_markup))
+        return self
+
+
+async def _make_product_for_photos(session, chat_id: int) -> tuple[ProductService, int, FSMContext]:
+    service = ProductService(session)
+    user = await service.get_or_create_user(telegram_id=chat_id, username="u", full_name="U")
+    product = await service.create_draft(user.id)
+    state = _make_state(chat_id)
+    await state.update_data(product_id=product.id, photos=[])
+    await state.set_state(NewProductStates.photos)
+    return service, product.id, state
+
+
+@pytest.mark.asyncio
+async def test_album_of_three_photos_answers_once(session, monkeypatch):
+    """Раздел 6 ТЗ v3: 3 кадра одного альбома → одно «Фото получено (3)»,
+    а не три, все 3 фото при этом сохранены."""
+    monkeypatch.setattr(new_product, "ALBUM_DEBOUNCE_SECONDS", 0)
+    service, product_id, state = await _make_product_for_photos(session, chat_id=41)
+
+    group_id = "album-1"
+    msg1 = _FakePhotoMessage("f1", chat_id=41, media_group_id=group_id)
+    msg2 = _FakePhotoMessage("f2", chat_id=41, media_group_id=group_id)
+    msg3 = _FakePhotoMessage("f3", chat_id=41, media_group_id=group_id)
+
+    await new_product.step_photo(msg1, state, service, session)
+    await new_product.step_photo(msg2, state, service, session)
+    await new_product.step_photo(msg3, state, service, session)
+
+    task = new_product._album_debounce_tasks[(41, group_id)]
+    await task
+
+    all_texts = [t for t, _ in msg1.answered + msg2.answered + msg3.answered]
+    photo_received = [t for t in all_texts if t.startswith("Фото получено")]
+    assert photo_received == ["Фото получено (3)."]
+
+    data = await state.get_data()
+    assert len(data["photos"]) == 3
+
+    product = await service.get_product(product_id)
+    assert len(product.images) == 3
+
+
+@pytest.mark.asyncio
+async def test_single_photo_answers_immediately(session):
+    """Одиночное фото (без media_group_id) не должно ждать debounce — как и
+    раньше, ответ уходит сразу же."""
+    service, product_id, state = await _make_product_for_photos(session, chat_id=42)
+    msg = _FakePhotoMessage("solo", chat_id=42, media_group_id=None)
+
+    await new_product.step_photo(msg, state, service, session)
+
+    assert msg.answered
+    assert msg.answered[-1][0] == "Фото получено (1)."
+    assert (42, None) not in new_product._album_debounce_tasks
+
+
+@pytest.mark.asyncio
+async def test_album_small_photos_warn_only_once(session, monkeypatch):
+    """_photo_size_warning должен сработать максимум раз на альбом, даже
+    если несколько кадров подряд оказались маленькими."""
+    monkeypatch.setattr(new_product, "ALBUM_DEBOUNCE_SECONDS", 0)
+    service, product_id, state = await _make_product_for_photos(session, chat_id=43)
+
+    group_id = "album-small"
+    small = (100, 100)
+    msg1 = _FakePhotoMessage("s1", chat_id=43, media_group_id=group_id, image_size=small)
+    msg2 = _FakePhotoMessage("s2", chat_id=43, media_group_id=group_id, image_size=small)
+    msg3 = _FakePhotoMessage("s3", chat_id=43, media_group_id=group_id, image_size=small)
+
+    await new_product.step_photo(msg1, state, service, session)
+    await new_product.step_photo(msg2, state, service, session)
+    await new_product.step_photo(msg3, state, service, session)
+
+    task = new_product._album_debounce_tasks[(43, group_id)]
+    await task
+
+    all_texts = [t for t, _ in msg1.answered + msg2.answered + msg3.answered]
+    warnings = [t for t in all_texts if "меньше минимума" in t]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_quick_create_album_of_three_photos_answers_once(session, monkeypatch):
+    """Тот же debounce работает и в быстром режиме (quick_create), не только
+    в пошаговом /new — обе ветки переиспользуют handle_incoming_photo."""
+    monkeypatch.setattr(new_product, "ALBUM_DEBOUNCE_SECONDS", 0)
+    service = ProductService(session)
+    user = await service.get_or_create_user(telegram_id=44, username="u", full_name="U")
+    product = await service.create_draft(user.id)
+    state = _make_state(44)
+    await state.update_data(product_id=product.id, photos=[])
+    await state.set_state(QuickCreateStates.photos)
+
+    group_id = "quick-album"
+    msg1 = _FakePhotoMessage("q1", chat_id=44, media_group_id=group_id)
+    msg2 = _FakePhotoMessage("q2", chat_id=44, media_group_id=group_id)
+    msg3 = _FakePhotoMessage("q3", chat_id=44, media_group_id=group_id)
+
+    await quick_create.quick_photo(msg1, state, service, session)
+    await quick_create.quick_photo(msg2, state, service, session)
+    await quick_create.quick_photo(msg3, state, service, session)
+
+    task = new_product._album_debounce_tasks[(44, group_id)]
+    await task
+
+    all_texts = [t for t, _ in msg1.answered + msg2.answered + msg3.answered]
+    photo_received = [t for t in all_texts if t.startswith("Фото получено")]
+    assert photo_received == ["Фото получено (3)."]
+
+    data = await state.get_data()
+    assert len(data["photos"]) == 3

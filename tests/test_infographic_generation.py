@@ -353,6 +353,67 @@ async def test_edit_failure_then_generate_then_ok(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pillow_uses_real_product_photo_when_no_ai_keys(session, monkeypatch):
+    """Раздел 5 ТЗ v3: без XAI_API_KEY (Grok вообще не вызывается) и без
+    ANTHROPIC_API_KEY, если у товара уже есть локальный файл главного фото —
+    Pillow-инфографика должна показывать реальное фото, а не только текст."""
+    import io
+
+    from PIL import Image as PILImage
+
+    from app.services.storage import save_bytes
+
+    monkeypatch.setattr(settings, "xai_api_key", "")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+
+    grok_called = False
+
+    async def fake_grok(self, *args, **kwargs):
+        nonlocal grok_called
+        grok_called = True
+        return b"SHOULD-NOT-BE-CALLED"
+
+    monkeypatch.setattr(GrokImagineClient, "generate_infographic", fake_grok)
+    monkeypatch.setattr(GrokImagineClient, "edit_infographic", fake_grok)
+
+    service, product_id = await _make_product(session)
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (400, 500), (200, 40, 40)).save(buf, format="PNG")
+    storage_file = await save_bytes(session, buf.getvalue(), filename="product.png", content_type="image/png")
+    await service.add_image(product_id, storage_file.id, image_type="main", position=0)
+
+    images = await service.generate_infographic_images(product_id, count=1)
+
+    assert grok_called is False
+    assert len(images) == 1
+
+    from pathlib import Path
+
+    png_bytes = Path(images[0].storage_file.path).read_bytes()
+    assert png_bytes.startswith(b"\x89PNG")
+    im = PILImage.open(io.BytesIO(png_bytes))
+    assert im.size == (900, 1200)
+
+
+@pytest.mark.asyncio
+async def test_pillow_text_only_when_no_photo_on_disk(session, monkeypatch):
+    """Без главного фото на диске (или без фото вообще) — прежний
+    текстовый Pillow-рендер, без ошибок."""
+    monkeypatch.setattr(settings, "xai_api_key", "")
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+
+    service, product_id = await _make_product(session)
+    images = await service.generate_infographic_images(product_id, count=1)
+
+    assert len(images) == 1
+    from pathlib import Path
+
+    png_bytes = Path(images[0].storage_file.path).read_bytes()
+    assert png_bytes.startswith(b"\x89PNG")
+
+
+@pytest.mark.asyncio
 async def test_edit_and_generate_fail_goes_to_pillow(session, monkeypatch):
     monkeypatch.setattr(settings, "xai_api_key", "test-key")
     monkeypatch.setattr(settings, "anthropic_api_key", "test-key")
