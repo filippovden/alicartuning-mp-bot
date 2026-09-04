@@ -17,6 +17,7 @@ from app.db.models import (
     Category,
     CategoryAttr,
     Image,
+    ImageType,
     Marketplace,
     Product,
     PublishLog,
@@ -275,18 +276,25 @@ class ProductService:
             processed.append(new_image)
         return processed
 
+    INFOGRAPHIC_VARIANTS = ("material", "fit")
+
     async def generate_infographic_images(self, product_id: int, count: int = 1) -> list[Image]:
         """Генерирует инфографику преимуществ товара (раздел 11, 12 ТЗ).
 
         При заданном XAI_API_KEY использует настоящую AI-генерацию изображения
-        через Grok Imagine (app/services/ai/grok_imagine.py) по промпту,
-        собранному из буллетов. Без ключа или при сбое API — fallback на
-        MVP-рендер Pillow (текст на белом фоне, app/services/image_pipeline.py).
+        через Grok Imagine (app/services/ai/grok_imagine.py): если у товара есть
+        главное фото с публичным http(s) URL — правит его (edit_infographic),
+        иначе рисует с нуля (generate_infographic) по промпту, собранному из
+        буллетов. При наличии ключа всегда отдаём минимум 2 варианта (акцент на
+        материал / на совместимость с моделью) — с одной картинкой продавцу
+        не из чего выбирать. Без ключа — один Pillow-рендер, дублировать
+        одинаковые Pillow-картинки незачем.
 
-        Буллеты сперва пытаемся получить через Claude, но недоступность
-        Anthropic не должна ронять инфографику целиком — при любом сбое
-        собираем их из уже заполненных полей товара (см. _safe_generate_bullets).
-        Итоговый Pillow-путь работает без единого обращения к Anthropic."""
+        Буллеты сперва пытаемся получить через Claude, но недоступность или
+        отсутствие ключа Anthropic не должны ронять инфографику целиком — при
+        любом сбое (или сразу, если ключа нет) собираем буллеты из уже
+        заполненных полей товара (см. _safe_generate_bullets). Итоговый
+        Pillow-путь работает без единого обращения к Anthropic."""
         from app.services.storage import save_bytes
 
         product = await self.get_product(product_id)
@@ -294,12 +302,22 @@ class ProductService:
             raise ValueError(f"Товар {product_id} не найден")
 
         bullets = await self._safe_generate_bullets(product)
+        target_count = max(count, 2) if settings.xai_api_key else count
 
         created: list[Image] = []
-        for i in range(count):
-            infographic_bytes = await self._render_infographic(product, bullets)
+        for i in range(target_count):
+            variant = self.INFOGRAPHIC_VARIANTS[i % len(self.INFOGRAPHIC_VARIANTS)]
+            infographic_bytes = await self._render_one_infographic(product, bullets, variant)
             storage_file = await save_bytes(self.session, infographic_bytes, filename="infographic.png", content_type="image/png")
             image = await self.add_image(product_id, storage_file.id, image_type="infographic", position=100 + i)
+            # storage_file уже есть в памяти — присваиваем напрямую, чтобы хендлер
+            # не спотыкался о ленивую подгрузку связи на async-сессии (MissingGreenlet).
+            image.storage_file = storage_file
+            # Транзиентные (неперсистентные) байты только что сгенерированной
+            # картинки — хендлер шлёт их пользователю без обращения к диску,
+            # чтобы гонка/проблема с volume не превращалась в «файл не найден»
+            # для картинки, которая только что реально была создана.
+            image._preview_bytes = infographic_bytes
             created.append(image)
         return created
 
@@ -312,6 +330,13 @@ class ProductService:
             material=product.material or "",
             package_contents=product.package_contents or "",
         )
+        if not settings.anthropic_api_key or not settings.anthropic_api_key.strip():
+            # Пустой ключ — сразу fallback без сетевого запроса: раньше кнопка
+            # «Инфографика» без ANTHROPIC_API_KEY всё равно уходила в
+            # AsyncAnthropic.messages.create и молча ждала таймаут/ошибку
+            # авторизации, прежде чем откатиться на fallback-буллеты.
+            return self._fallback_bullets(product)
+
         try:
             bullets = await self.ai_service.generate_bullets(product.title or "", draft)
             if bullets:
@@ -345,41 +370,89 @@ class ProductService:
             bullets.append(f"Качество {product.brand or settings.brand_name}")
         return bullets
 
-    async def _render_infographic(self, product: Product, bullets: list[str]) -> bytes:
+    async def _render_one_infographic(self, product: Product, bullets: list[str], variant: str) -> bytes:
+        """Один кадр инфографики для заданного варианта (material/fit). Цепочка:
+        Grok edit по референс-фото → Grok generate без референса → Pillow —
+        каждый шаг best-effort, ни один сбой не должен всплыть наружу."""
         if settings.xai_api_key:
+            grok_bytes = await self._try_grok_render(product, bullets, variant)
+            if grok_bytes is not None:
+                return grok_bytes
+
+        from app.services import image_pipeline
+
+        return image_pipeline.generate_infographic(bullets, title=product.brand or settings.brand_name)
+
+    async def _try_grok_render(self, product: Product, bullets: list[str], variant: str) -> bytes | None:
+        from app.services.ai.grok_imagine import GrokImagineClient
+
+        prompt = self._build_infographic_prompt(product, bullets, variant)
+        client = GrokImagineClient()
+        reference_url = self._main_photo_public_url(product)
+
+        if reference_url:
             try:
-                return await self._render_infographic_via_grok(product, bullets)
+                return await client.edit_infographic(prompt, reference_url)
             except Exception as exc:
-                # Любой сбой Grok (сеть, лимиты, неожиданный формат ответа) —
-                # переходим на Pillow, а не роняем инфографику целиком. Логируем
-                # только текст ошибки (не exc_info) — traceback, задержавшийся в
-                # памяти дольше except-блока, ломает видимость последующих
-                # async-запросов в той же сессии SQLAlchemy (см. _safe_generate_bullets).
+                # Правка по референсу не обязана быть поддержана провайдером —
+                # не сдаёмся сразу на Pillow, пробуем сгенерировать с нуля.
+                # Логируем только текст ошибки (не exc_info) — traceback,
+                # задержавшийся в памяти дольше except-блока, ломает видимость
+                # последующих async-запросов в той же сессии SQLAlchemy
+                # (см. _safe_generate_bullets).
                 logger.warning(
-                    "Grok Imagine недоступен для товара %s (%s) — использую Pillow-fallback для инфографики",
+                    "Grok Imagine edit недоступен для товара %s (%s) — пробую generate без референса",
                     product.id,
                     str(exc),
                 )
 
-        from app.services import image_pipeline
+        try:
+            return await client.generate_infographic(prompt, aspect_ratio="3:4")
+        except Exception as exc:
+            logger.warning(
+                "Grok Imagine недоступен для товара %s (%s) — использую Pillow-fallback для инфографики",
+                product.id,
+                str(exc),
+            )
+            return None
 
-        return image_pipeline.generate_infographic(bullets, title=product.brand)
-
-    async def _render_infographic_via_grok(self, product: Product, bullets: list[str]) -> bytes:
+    def _build_infographic_prompt(self, product: Product, bullets: list[str], variant: str) -> str:
         from app.services.ai import prompts
-        from app.services.ai.grok_imagine import GrokImagineClient
 
         padded_bullets = (list(bullets) + ["", "", ""])[:3]
-        prompt = prompts.INFOGRAPHIC_PROMPT.format(
+        focus = prompts.INFOGRAPHIC_VARIANT_FOCUS.get(variant, prompts.INFOGRAPHIC_VARIANT_FOCUS["material"])
+        focus = focus.format(car_model=product.car_model or "Lada")
+        return prompts.INFOGRAPHIC_PROMPT.format(
             brand=product.brand or settings.brand_name,
-            title=product.title or "",
             car_model=product.car_model or "",
             material=product.material or "",
             color=product.color or "",
-            bullets=padded_bullets,
+            bullet1=padded_bullets[0],
+            bullet2=padded_bullets[1],
+            bullet3=padded_bullets[2],
+            variant_focus=focus,
         )
-        client = GrokImagineClient()
-        return await client.generate_infographic(prompt)
+
+    @staticmethod
+    def _main_photo_public_url(product: Product) -> str | None:
+        """Главное фото товара как публичный http(s) URL — референс для Grok
+        Imagine edit_infographic. Без S3 (STORAGE_BACKEND=local) url — это
+        локальный путь на диске контейнера, xAI по нему ничего не скачает —
+        штатный случай без S3, тогда просто нет референса (не ошибка)."""
+        main_images = [img for img in product.images if img.image_type == ImageType.MAIN] or [
+            img for img in product.images if img.image_type != ImageType.INFOGRAPHIC
+        ]
+        if not main_images:
+            return None
+
+        photo = sorted(main_images, key=lambda img: img.position)[0]
+        if not photo.storage_file:
+            return None
+
+        url = photo.storage_file.url
+        if url and url.startswith(("http://", "https://")):
+            return url
+        return None
 
     # --- AI-контент ---------------------------------------------------
 

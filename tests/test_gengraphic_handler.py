@@ -70,6 +70,9 @@ async def test_gengraphic_without_key_sends_photo(session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gengraphic_with_key_uses_grok_wording_and_sends_photo(session, monkeypatch):
+    """С ключом xAI хендлер показывает 2 варианта (раздел 7 ТЗ) — по одной
+    фотографии на каждый, с подписями «Вариант 1»/«Вариант 2», плюс итоговое
+    сообщение, что оба варианта добавлены."""
     monkeypatch.setattr(settings, "xai_api_key", "test-key")
     monkeypatch.setattr(AIContentService, "generate_bullets", _fake_bullets)
 
@@ -84,7 +87,10 @@ async def test_gengraphic_with_key_uses_grok_wording_and_sends_photo(session, mo
     await generate_graphic(callback, service)
 
     assert any("через Grok Imagine" in t for t in callback.message.answered)
-    assert len(callback.message.answered_photos) == 1
+    assert len(callback.message.answered_photos) == 2
+    captions = [caption for _, caption in callback.message.answered_photos]
+    assert captions == ["✅ Вариант 1", "✅ Вариант 2"]
+    assert any("Оба варианта добавлены" in t for t in callback.message.answered)
 
 
 @pytest.mark.asyncio
@@ -152,3 +158,30 @@ async def test_gengraphic_reports_missing_file_instead_of_crashing(session, monk
 
     assert any("не найден на диске" in t for t in callback.message.answered)
     assert callback.message.answered_photos == []
+
+
+@pytest.mark.asyncio
+async def test_gengraphic_sends_in_memory_bytes_if_disk_missing(session, monkeypatch, tmp_path):
+    """Раздел 8 ТЗ: если path на диске битый, но байты только что сгенерированной
+    картинки лежат прямо на объекте (_preview_bytes) — хендлер всё равно должен
+    отправить фото, не читая (и не спотыкаясь о) диск."""
+    monkeypatch.setattr(settings, "xai_api_key", "")
+
+    service, product_id = await _make_product(session)
+
+    missing_path = str(tmp_path / "does-not-exist.png")
+    fake_image = _FakeImage(image_id=999, path=missing_path)
+    fake_image._preview_bytes = b"IN-MEMORY-BYTES"
+
+    async def fake_generate_infographic_images(self, product_id, count=1):
+        return [fake_image]
+
+    monkeypatch.setattr(ProductService, "generate_infographic_images", fake_generate_infographic_images)
+
+    callback = _FakeCallback(f"gengraphic:{product_id}")
+
+    await generate_graphic(callback, service)
+
+    assert len(callback.message.answered_photos) == 1
+    _, caption = callback.message.answered_photos[0]
+    assert caption == "✅ Инфографика добавлена к карточке."

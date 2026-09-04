@@ -437,19 +437,24 @@ async def process_images(callback: CallbackQuery, product_service) -> None:
 
 @router.callback_query(F.data.startswith("gengraphic:"))
 async def generate_graphic(callback: CallbackQuery, product_service) -> None:
-    """Кнопка «🎨 Инфографика» — раздел 1/4 (Senior Backend): вся цепочка
-    (буллеты → Grok Imagine → Pillow) обёрнута так, чтобы недоступность любого
-    внешнего сервиса не оставляла пользователя без ответа и без stacktrace."""
+    """Кнопка «🎨 Инфографика» — вся цепочка (буллеты → Grok Imagine с
+    референс-фото/без него → Pillow) обёрнута так, чтобы недоступность любого
+    внешнего сервиса не оставляла пользователя без ответа и без stacktrace.
+    С XAI_API_KEY отдаём 2 варианта (акцент на материал / на совместимость с
+    моделью) — с одной картинкой выбирать не из чего; без ключа — один
+    Pillow-рендер, дублировать одинаковые Pillow-картинки незачем."""
     product_id = int(callback.data.split(":")[1])
     await callback.answer()
 
     if settings.xai_api_key:
         await callback.message.answer("⏳ Генерирую инфографику через Grok Imagine...")
+        count = 2
     else:
         await callback.message.answer("⏳ Генерирую инфографику...")
+        count = 1
 
     try:
-        images = await product_service.generate_infographic_images(product_id)
+        images = await product_service.generate_infographic_images(product_id, count=count)
     except Exception:
         logger.warning("Не удалось сгенерировать инфографику для товара %s", product_id, exc_info=True)
         await callback.message.answer("⚠️ Не удалось сгенерировать инфографику. Попробуйте ещё раз чуть позже.")
@@ -459,25 +464,35 @@ async def generate_graphic(callback: CallbackQuery, product_service) -> None:
         await callback.message.answer("⚠️ Инфографика не создана.")
         return
 
-    product = await product_service.get_product(product_id)
-    created_ids = {img.id for img in images}
-    stored = [img for img in product.images if img.id in created_ids and img.storage_file]
+    from pathlib import Path
 
-    photo_bytes = None
-    if stored:
-        from pathlib import Path
+    sent = 0
+    for idx, image in enumerate(images):
+        # Байты только что сгенерированной картинки лежат прямо на объекте
+        # (см. ProductService.generate_infographic_images) — читаем диск только
+        # если их почему-то нет, а не наоборот, чтобы гонка/проблема с volume
+        # не превращалась в «файл не найден» для картинки, которая только что
+        # реально была создана.
+        photo_bytes = getattr(image, "_preview_bytes", None)
+        if photo_bytes is None and image.storage_file:
+            source_path = Path(image.storage_file.path)
+            if source_path.exists():
+                photo_bytes = source_path.read_bytes()
 
-        source_path = Path(stored[-1].storage_file.path)
-        if source_path.exists():
-            photo_bytes = source_path.read_bytes()
+        if photo_bytes is None:
+            continue
 
-    if photo_bytes is not None:
+        caption = f"✅ Вариант {idx + 1}" if len(images) > 1 else "✅ Инфографика добавлена к карточке."
         await callback.message.answer_photo(
             BufferedInputFile(photo_bytes, filename="infographic.png"),
-            caption="✅ Инфографика добавлена к карточке.",
+            caption=caption,
         )
-    else:
+        sent += 1
+
+    if sent == 0:
         await callback.message.answer("⚠️ Файл инфографики не найден на диске.")
+    elif sent > 1:
+        await callback.message.answer("Оба варианта добавлены к карточке.")
 
 
 @router.callback_query(F.data.startswith("publish:"))

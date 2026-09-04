@@ -22,7 +22,7 @@ OZON_CANVAS = (700, 933)
 # Берём больший из двух допустимых форматов — подходит под оба маркетплейса (раздел 10 ТЗ).
 DEFAULT_CANVAS = (1200, 1600)
 
-INFOGRAPHIC_SIZE = (1200, 1200)
+INFOGRAPHIC_SIZE = (900, 1200)  # 3:4 под карточку WB (900×1200) и кадр Ozon
 
 BRAND_BG_COLOR = (255, 255, 255)
 BRAND_ACCENT_COLOR = (20, 20, 20)

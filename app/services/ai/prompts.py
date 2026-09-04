@@ -61,27 +61,27 @@ KEYWORDS_PROMPT = """\
 Выведи ключевые слова через запятую, без нумерации и пояснений."""
 
 INFOGRAPHIC_PROMPT = """\
-Сгенерируй изображение-инфографику для карточки товара маркетплейса в стиле бренда {brand}.
-
-Требования к изображению:
-- Чистый белый или светло-серый однотонный фон, без текстур, без градиентов и без рекламного шума
-- Товар автотюнинга (накладка, спойлер, карман обивки двери и т.п.) крупно и чётко по центру композиции
-- Ровно 3 кратких преимущества текстом на изображении, каждое — с иконкой-галочкой (✓)
-- Название бренда "{brand}" вверху или внизу изображения
-- Явный акцент на совместимость с автомобилями Lada, модель: {car_model}
-- Никакой рекламной лексики на изображении: без слов «скидка», «акция», «хит», «лучший», «распродажа»
-- Стиль — премиальная карточка маркетплейса (уровень Wildberries/Ozon), а НЕ мем, баннер или коллаж со скидками
-- Аккуратная разборчивая типографика с достаточным контрастом текста к фону
-
-Товар: "{title}"
-Материал: {material}
-Цвет: {color}
-
-Преимущества для отображения на изображении:
-1. {bullets[0]}
-2. {bullets[1]}
-3. {bullets[2]}
+Product infographic for Wildberries/Ozon card, aspect 3:4 vertical.
+Brand name at the top: {brand}
+Real auto-tuning part for {car_model}, {material}, color {color}.
+The product is centered on a clean white studio background.
+Keep the real product shape and color. Do not invent a different part.
+Three short factual benefits with checkmarks:
+- {bullet1}
+- {bullet2}
+- {bullet3}
+Style: premium automotive accessory catalog photo, sharp, no people, no logos of other brands, no marketplace UI.
+Forbidden words on the image: хит, скидка, акция, оригинал, копия, аналог, реплика, лучший.
+Focus: {variant_focus}.
 """
+
+# Два варианта инфографики (раздел 7 ТЗ) — акцент на материал/внешний вид или
+# на совместимость с конкретной моделью Lada. "fit" содержит {car_model} —
+# подставляется отдельно в ProductService._build_infographic_prompt.
+INFOGRAPHIC_VARIANT_FOCUS = {
+    "material": "material quality and finish",
+    "fit": "exact fit for {car_model}",
+}
 
 QUICK_PARSE_PROMPT = """\
 Продавец автозапчастей прислал одним сообщением свободное описание нового товара.

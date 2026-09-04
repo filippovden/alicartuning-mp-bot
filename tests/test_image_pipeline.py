@@ -46,6 +46,14 @@ def test_process_product_photo_end_to_end():
     img.verify()
 
 
+def test_infographic_canvas_is_3_by_4():
+    """Раздел 4 ТЗ: карточка маркетплейса — вертикаль 900×1200 (3:4), не квадрат."""
+    raw = generate_infographic(["ABS-пластик", "Для Lada Vesta", "Чёрный глянец"], title="ALICARTUNING")
+    assert raw.startswith(b"\x89PNG")
+    im = Image.open(io.BytesIO(raw))
+    assert im.size == (900, 1200)
+
+
 def test_generate_infographic_returns_valid_png():
     bullets = [
         "Прочный ABS-пластик (не трескается зимой)",
