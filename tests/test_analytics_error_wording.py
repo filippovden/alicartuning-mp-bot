@@ -42,10 +42,22 @@ def test_marketplace_error_line_rewords_by_keyword_even_without_429_status():
     assert "минуту" in line
 
 
-def test_marketplace_error_line_keeps_other_errors_as_is():
+def test_marketplace_error_line_maps_401_403_to_statistics_scope_hint():
+    """Раздел 5 ТЗ v7: если у ключа WB нет категории доступа «Статистика» —
+    русская фраза про включение категории, не сырой текст ошибки площадки."""
     exc = MarketplaceAPIError("Неверный API-ключ", status_code=401)
     line = analytics_handler._marketplace_error_line("Wildberries", exc)
-    assert "Неверный API-ключ" in line
+    assert "Неверный API-ключ" not in line
+    assert "Статистика" in line
+
+
+def test_marketplace_error_line_network_error_has_no_url():
+    """BaseMarketplaceClient._request на сетевой ошибке кладёт в exc.message
+    полный URL (см. app/services/marketplaces/base.py) — в чат он попадать не должен."""
+    exc = MarketplaceAPIError("Сетевая ошибка при запросе к https://statistics-api.wildberries.ru/api/v1/supplier/sales: timeout")
+    line = analytics_handler._marketplace_error_line("Wildberries", exc)
+    assert "https://" not in line
+    assert "не отвечает" in line
 
 
 @pytest.mark.asyncio

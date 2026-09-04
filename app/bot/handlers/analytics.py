@@ -44,26 +44,30 @@ async def cmd_analytics(message: Message, product_service, session) -> None:
     except MarketplaceAPIError as exc:
         lines.append(_marketplace_error_line("Ozon", exc))
 
-    lines.append(
-        "\nПодсказка: /analytics [ID товара] — рекомендация цены и тайминг "
-        "продвижения по конкретному товару."
-    )
     await message.answer("\n".join(lines))
 
 
 def _marketplace_error_line(marketplace: str, exc: MarketplaceAPIError) -> str:
-    """Раздел H ТЗ: никакого техжаргона в лицо пользователю. WB Statistics API
-    (get_wb_sales_summary → /api/v1/supplier/sales и т.п.) официально ограничен
-    1 запросом в минуту на ключ и при превышении отдаёт сырое английское
-    сообщение вида «Limited by global limiter, per seller ...» — показываем
-    вместо него понятную причину и что делать."""
+    """Раздел 5 ТЗ v7: никакого техжаргона, URL или сырого текста ошибки в лицо
+    пользователю — ни «Limited by global limiter, per seller ...» (WB Statistics
+    API при превышении лимита), ни «Сетевая ошибка при запросе к https://...»
+    (см. BaseMarketplaceClient._request — сетевая ошибка несёт полный URL в
+    exc.message). Различаем по exc.status_code, а не по тексту, кроме случая
+    сетевой ошибки, где status_code всегда None."""
     message = exc.message or ""
     if exc.status_code == 429 or "limit" in message.lower():
         return (
             f"\n<b>{marketplace}:</b> ⚠️ статистика временно ограничена площадкой "
-            "(слишком частые запросы) — повторите через минуту через /analytics."
+            "(слишком частые запросы) — повторите через минуту через кнопку «Продажи»."
         )
-    return f"\n<b>{marketplace}:</b> ⚠️ не удалось получить данные ({message})"
+    if exc.status_code in (401, 403):
+        return (
+            f"\n<b>{marketplace}:</b> ⚠️ у ключа нет доступа к разделу «Статистика» — "
+            "включите эту категорию доступа в личном кабинете."
+        )
+    if exc.status_code is None:
+        return f"\n<b>{marketplace}:</b> ⚠️ сейчас не отвечает. Попробуйте через несколько минут."
+    return f"\n<b>{marketplace}:</b> ⚠️ не удалось получить данные (код {exc.status_code})."
 
 
 def _top_sku_lines(by_sku: dict[str, dict], limit: int = 5) -> list[str]:

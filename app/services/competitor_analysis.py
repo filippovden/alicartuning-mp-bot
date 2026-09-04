@@ -48,7 +48,28 @@ WB_BROWSER_HEADERS = {
 
 
 class CompetitorAnalysisError(Exception):
-    pass
+    """Раздел 4 ТЗ v7: несёт status_code (когда он есть), чтобы вызывающий код
+    мог показать человеческую фразу вместо str(exc) — сырое исключение httpx
+    для HTTPStatusError включает полный URL, который заказчику видеть незачем."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+def _wb_error_text(status_code: int | None) -> str:
+    """Человеческий текст по коду ответа витрины WB — раздел 4 ТЗ v7, таблица:
+    403/сеть → «разбор недоступен», 429 → «поиск не пускает», без кода (сетевая
+    ошибка) → «сейчас не отвечает». Ни в одном варианте нет URL/пути/str(exc)."""
+    if status_code == 429:
+        return "Поиск сайта сейчас не пускает. Свои карточки выкладывать можно."
+    if status_code == 403:
+        return (
+            "Разбор чужих магазинов с этого сервера Wildberries не открывает.\n"
+            "Свои товары выкладывай через «Новый товар»."
+        )
+    return "Сайт Wildberries сейчас не отвечает. Попробуйте чуть позже."
 
 
 async def _get_json_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> dict:
@@ -152,8 +173,12 @@ async def search_wb_competitors(query: str, limit: int = 20, exclude_brand: str 
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=WB_BROWSER_HEADERS) as client:
             payload = await _get_json_with_retry(client, WB_SEARCH_URL, params)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise CompetitorAnalysisError(_wb_error_text(status_code), status_code=status_code) from exc
     except httpx.HTTPError as exc:
-        raise CompetitorAnalysisError(f"Не удалось получить данные поиска WB: {exc}") from exc
+        logger.warning("Сетевая ошибка при поиске конкурентов WB: %s", exc)
+        raise CompetitorAnalysisError(_wb_error_text(None)) from exc
 
     products = payload.get("data", {}).get("products", [])
     exclude_norm = exclude_brand.strip().casefold() if exclude_brand else None
@@ -223,11 +248,15 @@ async def fetch_wb_shop(seller_id: str, max_pages: int = 3, limit: int = 100) ->
                         break
                 if len(items) >= limit:
                     break
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        raise CompetitorAnalysisError(_wb_error_text(status_code), status_code=status_code) from exc
     except httpx.HTTPError as exc:
-        raise CompetitorAnalysisError(f"Не удалось получить данные магазина WB: {exc}") from exc
+        logger.warning("Сетевая ошибка при разборе магазина WB: %s", exc)
+        raise CompetitorAnalysisError(_wb_error_text(None)) from exc
 
     if not items:
-        raise CompetitorAnalysisError("По этой ссылке не нашлось товаров — проверьте ссылку на магазин WB.")
+        raise CompetitorAnalysisError("Ничего не нашли.")
 
     return CompetitorReport(query=seller_id, items=items)
 

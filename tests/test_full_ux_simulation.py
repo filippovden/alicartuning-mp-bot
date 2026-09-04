@@ -254,8 +254,8 @@ async def test_A_main_menu_buttons_and_start_help(session):
             assert texts.WELCOME in msg2.answered
 
             m = _FakeMessage(user=user)
-            await common.menu_new_product(m)
-            assert m.answered == [texts.NEW_PRODUCT_CHOOSE_MODE]
+            await common.menu_new_product(m, _make_state(user.id), service)
+            assert m.answered == [texts.QUICK_ASK_PHOTOS]
 
             m = _FakeMessage(user=user)
             await common.menu_list(m, service)
@@ -270,12 +270,12 @@ async def test_A_main_menu_buttons_and_start_help(session):
             assert m.answered
 
             m = _FakeMessage(user=user)
-            await common.menu_analytics(m, service, session)
+            await common.menu_sales(m, service, session)
             assert m.answered
 
             m = _FakeMessage(user=user)
-            await common.menu_more(m)
-            assert m.answered == [texts.MORE_MENU]
+            await common.menu_help(m)
+            assert m.answered == [texts.HELP_TEXT]
 
             m = _FakeMessage("/cancel", user=user)
             state = _make_state(user.id)

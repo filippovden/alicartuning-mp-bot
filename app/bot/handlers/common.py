@@ -4,18 +4,20 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.handlers import admin, analytics, list_products, reviews
+from app.bot.handlers import admin, analytics, list_products, quick_create, reviews
 from app.bot.keyboards import (
-    MENU_ANALYTICS,
     MENU_CLONE,
+    MENU_CLONE_OLD,
+    MENU_HELP,
+    MENU_HELP_OLD,
     MENU_LIST,
-    MENU_MORE,
     MENU_NEW_PRODUCT,
     MENU_REVIEWS,
+    MENU_SALES,
+    MENU_SALES_OLD,
     clone_pick_kb,
+    help_kb,
     main_menu_kb,
-    more_menu_kb,
-    new_product_mode_kb,
 )
 
 router = Router(name="common")
@@ -60,8 +62,18 @@ async def text_cancel(message: Message, state: FSMContext) -> None:
 
 
 @router.message(F.text == MENU_NEW_PRODUCT)
-async def menu_new_product(message: Message) -> None:
-    await message.answer(texts.NEW_PRODUCT_CHOOSE_MODE, reply_markup=new_product_mode_kb())
+async def menu_new_product(message: Message, state: FSMContext, product_service) -> None:
+    """«📦 Новый товар» — раздел 1 ТЗ v7: сразу быстрый режим (фото), без
+    развилки Быстро/Пошагово — она перегружала первый шаг лишним вопросом.
+    Пошаговый режим остаётся рабочим по /new для тех, кто печатает команды."""
+    await quick_create.start_quick_mode_flow(
+        state,
+        product_service,
+        message.answer,
+        telegram_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+    )
 
 
 @router.message(F.text == MENU_LIST)
@@ -69,7 +81,7 @@ async def menu_list(message: Message, product_service) -> None:
     await list_products.cmd_list(message, product_service)
 
 
-@router.message(F.text == MENU_CLONE)
+@router.message(F.text.in_({MENU_CLONE, MENU_CLONE_OLD}))
 async def menu_clone(message: Message, product_service) -> None:
     """Раздел A5 ТЗ: отдельный, понятный экран для клонирования — не тот же
     список, что «Мои товары», без объяснения, что тут вообще происходит."""
@@ -98,30 +110,43 @@ async def menu_reviews(message: Message, session) -> None:
     await reviews.cmd_reviews(message, session)
 
 
-@router.message(F.text == MENU_ANALYTICS)
-async def menu_analytics(message: Message, product_service, session) -> None:
+@router.message(F.text.in_({MENU_SALES, MENU_SALES_OLD}))
+async def menu_sales(message: Message, product_service, session) -> None:
+    """«📊 Продажи» — раздел 1 и 5 ТЗ v7: аналитика кабинета (WB Statistics +
+    Ozon Analytics), без обращения к витрине search.wb.ru с этого экрана —
+    /analytics без ID (см. analytics.cmd_analytics) ровно то и делает."""
     await analytics.cmd_analytics(message, product_service, session)
 
 
-@router.message(F.text == MENU_MORE)
-async def menu_more(message: Message) -> None:
-    await message.answer(texts.MORE_MENU, reply_markup=more_menu_kb())
+@router.message(F.text.in_({MENU_HELP, MENU_HELP_OLD}))
+async def menu_help(message: Message) -> None:
+    await message.answer(texts.HELP_TEXT, reply_markup=help_kb())
 
 
-@router.callback_query(F.data == "moredrafts")
-async def more_drafts(callback: CallbackQuery, product_service) -> None:
-    """«Черновики» на экране «Ещё» — тот же код, что /drafts (раздел 5 ТЗ v6)."""
+@router.callback_query(F.data == "helpcancel")
+async def help_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    """«Начать заново» на экране «Помощь» — тот же код, что /cancel (раздел 2 ТЗ v7)."""
+    await callback.answer()
+    await state.clear()
+    await callback.message.answer(texts.CANCELLED, reply_markup=main_menu_kb())
+
+
+@router.callback_query(F.data == "helpdrafts")
+async def help_drafts(callback: CallbackQuery, product_service) -> None:
+    """«Черновики» на экране «Помощь» — тот же код, что /drafts (раздел 2 ТЗ v7)."""
     await callback.answer()
     await list_products.send_drafts(callback.message.answer, callback.from_user, product_service)
 
 
-@router.callback_query(F.data == "moresynccategories")
-async def more_sync_categories(callback: CallbackQuery, session) -> None:
-    """«Категории Ozon» на экране «Ещё» — тот же код, что /synccategories,
-    админская операция под кнопкой, а не слэшем (раздел 5 ТЗ v6)."""
+@router.callback_query(F.data == "helpsynccategories")
+async def help_sync_categories(callback: CallbackQuery, session) -> None:
+    """«Категории Ozon» на экране «Помощь» — тот же код, что /synccategories,
+    админская операция под кнопкой (раздел 2 ТЗ v7): админу можно, не-админу —
+    честная фраза, а не «доступна только администраторам» (это делает тот,
+    кто ставил бота, а не сам заказчик)."""
     await callback.answer()
     if not admin.is_admin_id(callback.from_user.id):
-        await callback.message.answer("Команда доступна только администраторам.")
+        await callback.message.answer("Это делает тот, кто ставил бота.")
         return
     await admin.sync_categories(callback.message.answer, session)
 

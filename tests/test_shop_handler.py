@@ -1,14 +1,16 @@
-"""Хендлер /shop — разбор магазина-конкурента на WB по ссылке, с сохранением
-снимка и трендом цены с первого запроса (см. app/bot/handlers/competitors.py,
-app/services/pricing_intelligence.py: save_shop_snapshot/get_shop_price_trend).
+"""Хендлер /shop (раздел 0 и 4 ТЗ v7): публичная витрина WB отдаёт 403/429 с этого
+сервера, гарантировать разбор чужого магазина нельзя — ручной /shop (кнопки на
+него больше не ведут, см. app/bot/keyboards.py:help_kb) теперь всегда отвечает
+одной короткой честной фразой, без сетевого запроса, без URL и без
+"Использование: /shop [ссылка]" (см. app/bot/handlers/competitors.py).
 """
 
 from __future__ import annotations
 
 import pytest
 
+from app.bot import texts
 from app.bot.handlers import competitors as competitors_handler
-from app.services.competitor_analysis import CompetitorAnalysisError, CompetitorItem, CompetitorReport
 
 
 class _FakeUser:
@@ -28,74 +30,57 @@ class _FakeMessage:
 
 
 @pytest.mark.asyncio
-async def test_shop_without_link_shows_usage(session):
+async def test_shop_without_link_shows_showcase_unavailable(session):
     message = _FakeMessage("/shop")
     await competitors_handler.cmd_shop(message, session)
-    assert "Использование" in message.answered[0]
-    assert "/shop" in message.answered[0]
+    assert message.answered == [texts.SHOWCASE_UNAVAILABLE]
 
 
 @pytest.mark.asyncio
-async def test_shop_with_unparseable_link_asks_for_valid_one(session):
-    message = _FakeMessage("/shop не ссылка")
-    await competitors_handler.cmd_shop(message, session)
-    assert any("Не нашёл ID продавца" in t for t in message.answered)
+async def test_shop_with_link_still_shows_showcase_unavailable_and_no_network_call(session):
+    """Раздел 4 ТЗ v7 и смоук-тест: ручной /shop с реальной ссылкой не должен
+    показывать URL/403/traceback — только короткую фразу. cmd_shop больше не
+    импортирует fetch_wb_shop (см. app/bot/handlers/competitors.py) — сходить
+    в сеть отсюда физически нечем."""
+    assert not hasattr(competitors_handler, "fetch_wb_shop")
 
-
-@pytest.mark.asyncio
-async def test_shop_first_query_saves_snapshot_and_shows_unknown_trend(session, monkeypatch):
-    async def fake_fetch_wb_shop(seller_id, max_pages=3, limit=100):
-        return CompetitorReport(
-            query=seller_id,
-            items=[
-                CompetitorItem(name="Накладки Vesta", price=1000, rating=4.5, feedbacks=10),
-                CompetitorItem(name="Накладки Granta", price=1200, rating=4.0, feedbacks=20),
-            ],
-        )
-
-    monkeypatch.setattr(competitors_handler, "fetch_wb_shop", fake_fetch_wb_shop)
-
-    message = _FakeMessage("/shop https://www.wildberries.ru/seller/12345")
+    message = _FakeMessage("/shop https://www.wildberries.ru/seller/445717")
     await competitors_handler.cmd_shop(message, session)
 
-    report_text = message.answered[-1]
-    assert "Магазин WB" in report_text
-    assert "12345" in report_text
-    assert "Товаров в ассортименте: 2" in report_text
-    assert "первый снимок" in report_text
+    assert message.answered == [texts.SHOWCASE_UNAVAILABLE]
+    assert "catalog.wb.ru" not in message.answered[0]
+    assert "wildberries.ru" not in message.answered[0]
 
 
 @pytest.mark.asyncio
-async def test_shop_second_query_shows_price_trend(session, monkeypatch):
-    reports = iter(
-        [
-            CompetitorReport(query="777", items=[CompetitorItem(name="a", price=1000, rating=4.5, feedbacks=10)]),
-            CompetitorReport(query="777", items=[CompetitorItem(name="a", price=1300, rating=4.5, feedbacks=10)]),
-        ]
-    )
+async def test_market_without_query_shows_showcase_unavailable(monkeypatch):
+    called = {"n": 0}
 
-    async def fake_fetch_wb_shop(seller_id, max_pages=3, limit=100):
-        return next(reports)
+    async def fail_if_called(*args, **kwargs):
+        called["n"] += 1
+        raise AssertionError("cmd_competitors не должен ходить в сеть")
 
-    monkeypatch.setattr(competitors_handler, "fetch_wb_shop", fake_fetch_wb_shop)
+    monkeypatch.setattr(competitors_handler, "search_wb_competitors", fail_if_called)
 
-    await competitors_handler.cmd_shop(_FakeMessage("/shop 777"), session)
-    message2 = _FakeMessage("/shop 777")
-    await competitors_handler.cmd_shop(message2, session)
+    message = _FakeMessage("/market")
+    await competitors_handler.cmd_competitors(message)
 
-    report_text = message2.answered[-1]
-    assert "выросла" in report_text
-    assert "30.0%" in report_text
+    assert message.answered == [texts.SHOWCASE_UNAVAILABLE]
+    assert called["n"] == 0
 
 
 @pytest.mark.asyncio
-async def test_shop_reports_friendly_error_on_failure(session, monkeypatch):
-    async def failing_fetch(seller_id, max_pages=3, limit=100):
-        raise CompetitorAnalysisError("По этой ссылке не нашлось товаров — проверьте ссылку на магазин WB.")
+async def test_market_with_query_still_shows_showcase_unavailable(monkeypatch):
+    called = {"n": 0}
 
-    monkeypatch.setattr(competitors_handler, "fetch_wb_shop", failing_fetch)
+    async def fail_if_called(*args, **kwargs):
+        called["n"] += 1
+        raise AssertionError("cmd_competitors не должен ходить в сеть")
 
-    message = _FakeMessage("/shop 999")
-    await competitors_handler.cmd_shop(message, session)
+    monkeypatch.setattr(competitors_handler, "search_wb_competitors", fail_if_called)
 
-    assert any("не нашлось товаров" in t for t in message.answered)
+    message = _FakeMessage("/market накладки на зеркала Granta")
+    await competitors_handler.cmd_competitors(message)
+
+    assert message.answered == [texts.SHOWCASE_UNAVAILABLE]
+    assert called["n"] == 0

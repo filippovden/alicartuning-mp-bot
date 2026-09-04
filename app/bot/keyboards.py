@@ -3,10 +3,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 MENU_NEW_PRODUCT = "📦 Новый товар"
 MENU_LIST = "📋 Мои товары"
-MENU_CLONE = "🧬 Клонировать"
+MENU_CLONE = "🧬 На другую модель"
+MENU_CLONE_OLD = "🧬 Клонировать"
 MENU_REVIEWS = "⭐ Отзывы"
-MENU_ANALYTICS = "📊 Аналитика"
-MENU_MORE = "⚙️ Ещё"
+MENU_SALES = "📊 Продажи"
+MENU_SALES_OLD = "📊 Аналитика"
+MENU_HELP = "❓ Помощь"
+MENU_HELP_OLD = "⚙️ Ещё"
 
 
 def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
@@ -14,12 +17,15 @@ def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Постоянное меню бота — основной путь для обычного пользователя, слэш-команды
-    остаются как power-user способ (см. раздел A ТЗ про удобство ежедневной выкладки)."""
+    """Постоянное меню бота — раздел 1 ТЗ v7: ровно 6 кнопок, без слэшей и без
+    «Ещё» как единственного входа в остальные функции. Старые подписи
+    («Клонировать»/«Аналитика»/«Ещё») остаются рабочими синонимами на один
+    релиз (см. common.py) — старая клавиатура на телефоне заказчика, которая
+    не обновилась мгновенно, не должна «молчать»."""
     builder = ReplyKeyboardBuilder()
     builder.row(KeyboardButton(text=MENU_NEW_PRODUCT), KeyboardButton(text=MENU_LIST))
     builder.row(KeyboardButton(text=MENU_CLONE), KeyboardButton(text=MENU_REVIEWS))
-    builder.row(KeyboardButton(text=MENU_ANALYTICS), KeyboardButton(text=MENU_MORE))
+    builder.row(KeyboardButton(text=MENU_SALES), KeyboardButton(text=MENU_HELP))
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -32,24 +38,18 @@ def new_product_mode_kb() -> InlineKeyboardMarkup:
 
 
 def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
-    """Превью карточки — раздел C2 ТЗ: одно главное действие сверху, дальше
-    самое нужное в паре рядов, «Обработать фото»/«Анализ конкурентов» убраны
-    отсюда (перегружали главный экран) и живут в карточке товара (см.
-    product_detail_kb) — там, где до них реально доходит очередь."""
+    """Превью карточки — раздел 3 ТЗ v7: ровно 4 кнопки, ничего, что заказчик
+    не может гарантированно довести до конца с этого сервера (Выдача/Цена/
+    Конкуренты убраны — они зовут мёртвую витрину search.wb.ru, см. раздел 0
+    и 4 ТЗ v7). Инфографика уходит тихо при «Выложить» и отдельной кнопкой
+    сюда не выносится — она есть в карточке товара (см. product_detail_kb)."""
     builder = InlineKeyboardBuilder()
     # Раздел 4.1 ТЗ v5: «Выложить» ведёт на экран выбора магазинов (если их
     # больше одного на платформу), а не сразу публикует — см. new_product.confirm_publish.
     builder.row(_btn("🚀 Выложить", f"publish:{product_id}"))
-    builder.row(
-        _btn("📈 Выдача", f"seo:{product_id}"),
-        _btn("💰 Цена", f"pricecheck:{product_id}"),
-    )
-    builder.row(
-        _btn("🎨 Инфографика", f"gengraphic:{product_id}"),
-        _btn("🧬 Другие модели", f"clone:{product_id}"),
-    )
-    builder.row(_btn("✏️ Править", f"edit:{product_id}"))
-    builder.row(_btn("❌ Отмена", f"cancel:{product_id}"))
+    builder.row(_btn("✏️ Исправить", f"quickedit:{product_id}"))
+    builder.row(_btn("🧬 На другую модель", f"clone:{product_id}"))
+    builder.row(_btn("❌ Не надо", f"cancel:{product_id}"))
     return builder.as_markup()
 
 
@@ -64,14 +64,28 @@ def open_product_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
 
 
 def product_detail_kb(product_id: int) -> InlineKeyboardMarkup:
-    """Карточка товара после «Открыть» — раздел D2 ТЗ: короткое превью + весь
-    набор действий по конкретному товару в одном месте."""
+    """Карточка товара после «Открыть» — раздел 3 ТЗ v7: ровно 5 кнопок, без
+    Выдача/Конкуренты (мёртвая витрина search.wb.ru, см. раздел 0 и 4 ТЗ v7)
+    и без «Пакет на модели» (код у clone_product.py остаётся рабочим, просто
+    не рекламируется здесь)."""
     builder = InlineKeyboardBuilder()
     builder.row(_btn("🚀 Выложить", f"publish:{product_id}"))
-    builder.row(_btn("🧬 Клон", f"clone:{product_id}"), _btn("📦 Пакет на модели", f"clonebatch:{product_id}"))
-    builder.row(_btn("✏️ Править", f"edit:{product_id}"), _btn("🎨 Инфографика", f"gengraphic:{product_id}"))
-    builder.row(_btn("📈 Выдача", f"seo:{product_id}"), _btn("🔍 Конкуренты", f"competitors:{product_id}"))
+    builder.row(_btn("✏️ Исправить", f"quickedit:{product_id}"))
+    builder.row(_btn("🧬 На другую модель", f"clone:{product_id}"))
+    builder.row(_btn("🎨 Инфографика", f"gengraphic:{product_id}"))
     builder.row(_btn("🖼 Фото", f"processimg:{product_id}"))
+    return builder.as_markup()
+
+
+def quickedit_kb(product_id: int) -> InlineKeyboardMarkup:
+    """«✏️ Исправить» — раздел 3 ТЗ v7: короткое меню на 4 пункта вместо полного
+    списка из 9 полей (см. list_products.EDITABLE_FIELDS/start_edit, который
+    остаётся рабочим для тех, кто печатает /edit [ID] руками)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(_btn("Название", f"quickeditfield:{product_id}:title"))
+    builder.row(_btn("Цена", f"quickeditfield:{product_id}:price"))
+    builder.row(_btn("Фото", f"processimg:{product_id}"))
+    builder.row(_btn("Назад к карточке", f"quickeditback:{product_id}"))
     return builder.as_markup()
 
 
@@ -205,13 +219,14 @@ def category_match_kb(prefix: str, labels: list[str]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def more_menu_kb() -> InlineKeyboardMarkup:
-    """Экран «⚙️ Ещё» — раздел 5 ТЗ v6: заказчик не айтишник, поэтому вместо
-    простыни слэш-команд — две кнопки на самое нужное. /market и /shop сюда
+def help_kb() -> InlineKeyboardMarkup:
+    """Экран «❓ Помощь» — раздел 2 ТЗ v7: заказчик не айтишник, поэтому вместо
+    простыни слэш-команд — три кнопки на самое нужное. /market и /shop сюда
     сознательно не выносятся, пока витрина WB отдаёт 403/429 с сервера."""
     builder = InlineKeyboardBuilder()
-    builder.row(_btn("📝 Черновики", "moredrafts"))
-    builder.row(_btn("🗂 Категории Ozon", "moresynccategories"))
+    builder.row(_btn("Начать заново", "helpcancel"))
+    builder.row(_btn("Черновики", "helpdrafts"))
+    builder.row(_btn("Категории Ozon", "helpsynccategories"))
     return builder.as_markup()
 
 

@@ -33,22 +33,34 @@ logger = logging.getLogger(__name__)
 router = Router(name="quick_create")
 
 
-@router.callback_query(F.data == "newmode:quick")
-async def start_quick_mode(callback: CallbackQuery, state: FSMContext, product_service) -> None:
-    user = await product_service.get_or_create_user(
-        telegram_id=callback.from_user.id,
-        username=callback.from_user.username,
-        full_name=callback.from_user.full_name,
-    )
+async def start_quick_mode_flow(
+    state: FSMContext, product_service, answer, *, telegram_id: int, username: str | None, full_name: str | None
+) -> None:
+    """Тело быстрого режима, вынесенное отдельно от CallbackQuery — раздел 1 ТЗ
+    v7: кнопка «Новый товар» в нижнем меню входит сюда напрямую, без развилки
+    Быстро/Пошагово (см. common.menu_new_product)."""
+    user = await product_service.get_or_create_user(telegram_id=telegram_id, username=username, full_name=full_name)
     product = await product_service.create_draft(user.id)
     await product_service.update_fields(product.id, brand=settings.brand_name)
 
     await state.set_state(QuickCreateStates.photos)
     await state.update_data(product_id=product.id, photos=[])
-    await callback.answer()
     # Раздел B.2 ТЗ: кнопка «Готово» появляется только после первого фото —
     # нажимать её при пустом черновике бессмысленно.
-    await callback.message.answer(texts.QUICK_ASK_PHOTOS)
+    await answer(texts.QUICK_ASK_PHOTOS)
+
+
+@router.callback_query(F.data == "newmode:quick")
+async def start_quick_mode(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    await callback.answer()
+    await start_quick_mode_flow(
+        state,
+        product_service,
+        callback.message.answer,
+        telegram_id=callback.from_user.id,
+        username=callback.from_user.username,
+        full_name=callback.from_user.full_name,
+    )
 
 
 @router.message(QuickCreateStates.photos, F.photo)

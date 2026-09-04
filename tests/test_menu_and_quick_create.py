@@ -94,10 +94,14 @@ async def _seed_photos(session, service: ProductService, product_id: int, count:
 
 
 @pytest.mark.asyncio
-async def test_menu_new_product_shows_mode_choice():
-    message = _FakeMessage()
-    await common.menu_new_product(message)
-    assert message.answered == [texts.NEW_PRODUCT_CHOOSE_MODE]
+async def test_menu_new_product_starts_quick_mode_directly(session):
+    """Раздел 1 ТЗ v7: «Новый товар» сразу быстрый режим, без развилки Быстро/Пошагово."""
+    service = ProductService(session)
+    message = _FakeMessage(user=_FakeUser(50))
+    state = _make_state(50)
+    await common.menu_new_product(message, state, service)
+    assert message.answered == [texts.QUICK_ASK_PHOTOS]
+    assert await state.get_state() == "QuickCreateStates:photos"
 
 
 @pytest.mark.asyncio
@@ -110,45 +114,73 @@ async def test_menu_list_reuses_cmd_list(session):
 
 
 @pytest.mark.asyncio
-async def test_menu_more_shows_commands():
+async def test_menu_clone_responds_to_old_label_too(session):
+    """Раздел 1 ТЗ v7: старая подпись «🧬 Клонировать» остаётся синонимом на релиз."""
+    service = ProductService(session)
+    message = _FakeMessage("🧬 Клонировать", user=_FakeUser(1))
+    await common.menu_clone(message, service)
+    assert message.answered
+
+
+@pytest.mark.asyncio
+async def test_menu_sales_reuses_cmd_analytics(session):
+    service = ProductService(session)
+    message = _FakeMessage(user=_FakeUser(1))
+    await common.menu_sales(message, service, session)
+    assert message.answered
+
+
+@pytest.mark.asyncio
+async def test_menu_help_shows_help_text():
     message = _FakeMessage()
-    await common.menu_more(message)
-    assert message.answered == [texts.MORE_MENU]
+    await common.menu_help(message)
+    assert message.answered == [texts.HELP_TEXT]
 
 
-# --- v6, раздел 5: экран «Ещё» без слэшей, кнопки Черновики/Категории Ozon -------
-
-
-@pytest.mark.asyncio
-async def test_more_menu_has_no_slash_commands():
-    assert "/drafts" not in texts.MORE_MENU
-    assert "/edit" not in texts.MORE_MENU
-    assert "/synccategories" not in texts.MORE_MENU
-    assert "/market" not in texts.MORE_MENU
-    assert "/shop" not in texts.MORE_MENU
+# --- v7, раздел 2: экран «Помощь» без слэшей, кнопки Начать заново/Черновики/Категории Ozon
 
 
 @pytest.mark.asyncio
-async def test_more_drafts_button_reuses_cmd_drafts_code(session):
+async def test_help_text_has_no_slash_commands():
+    assert "/drafts" not in texts.HELP_TEXT
+    assert "/edit" not in texts.HELP_TEXT
+    assert "/status" not in texts.HELP_TEXT
+    assert "/synccategories" not in texts.HELP_TEXT
+    assert "/market" not in texts.HELP_TEXT
+    assert "/shop" not in texts.HELP_TEXT
+
+
+@pytest.mark.asyncio
+async def test_help_cancel_button_reuses_cmd_cancel_code():
+    state = _make_state(30)
+    await state.set_state(NewProductStates.title)
+    callback = _FakeCallback("helpcancel", user=_FakeUser(30))
+    await common.help_cancel(callback, state)
+    assert callback.message.answered == [texts.CANCELLED]
+    assert await state.get_state() is None
+
+
+@pytest.mark.asyncio
+async def test_help_drafts_button_reuses_cmd_drafts_code(session):
     service = ProductService(session)
     await service.get_or_create_user(telegram_id=30, username="u", full_name="U")
-    callback = _FakeCallback("moredrafts", user=_FakeUser(30))
-    await common.more_drafts(callback, service)
+    callback = _FakeCallback("helpdrafts", user=_FakeUser(30))
+    await common.help_drafts(callback, service)
     assert callback.message.answered == [texts.NO_DRAFTS]
 
 
 @pytest.mark.asyncio
-async def test_more_sync_categories_button_rejects_non_admin(session, monkeypatch):
+async def test_help_sync_categories_button_rejects_non_admin(session, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "telegram_admin_ids", "999")
-    callback = _FakeCallback("moresynccategories", user=_FakeUser(30))
-    await common.more_sync_categories(callback, session)
-    assert any("только администраторам" in t for t in callback.message.answered)
+    callback = _FakeCallback("helpsynccategories", user=_FakeUser(30))
+    await common.help_sync_categories(callback, session)
+    assert any("тот, кто ставил бота" in t for t in callback.message.answered)
 
 
 @pytest.mark.asyncio
-async def test_more_sync_categories_button_calls_sync_for_admin(session, monkeypatch):
+async def test_help_sync_categories_button_calls_sync_for_admin(session, monkeypatch):
     from app.bot.handlers import admin as admin_handler
     from app.config import settings
 
@@ -159,8 +191,8 @@ async def test_more_sync_categories_button_calls_sync_for_admin(session, monkeyp
 
     monkeypatch.setattr(admin_handler, "sync_ozon_category_tree", fake_sync)
 
-    callback = _FakeCallback("moresynccategories", user=_FakeUser(30))
-    await common.more_sync_categories(callback, session)
+    callback = _FakeCallback("helpsynccategories", user=_FakeUser(30))
+    await common.help_sync_categories(callback, session)
     assert any("обновлён: 42" in t for t in callback.message.answered)
 
 

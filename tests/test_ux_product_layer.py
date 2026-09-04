@@ -141,25 +141,36 @@ async def test_product_preview_escapes_html_in_user_supplied_fields(session):
 
 
 def test_confirm_publish_kb_has_no_overloaded_buttons():
-    """Раздел C2 ТЗ: «Обработать фото» и «Анализ конкурентов» убраны с главного
-    превью — они живут в карточке товара (product_detail_kb)."""
+    """Раздел 3 ТЗ v7: превью — ровно 4 кнопки, без Выдача/Цена/Конкуренты
+    (мёртвая витрина search.wb.ru) и без отдельной Инфографики (уходит тихо
+    при «Выложить» — см. раздел 3 ТЗ v7)."""
     kb = confirm_publish_kb(1)
     all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "🖼 Обработать фото (убрать фон)" not in all_texts
-    assert "🔍 Анализ конкурентов" not in all_texts
+    assert not any("Выдача" in t for t in all_texts)
+    assert not any("Цена" in t for t in all_texts)
+    assert not any("Конкуренты" in t for t in all_texts)
+    assert not any("Инфографика" in t for t in all_texts)
     assert any("Выложить" in t for t in all_texts)  # раздел 4.1 ТЗ v5: «✅ Опубликовать» → «🚀 Выложить»
-    # 5 рядов: публикация / выдача+цена / инфографика+другие модели / править / отмена
-    # (раздел 3.1 ТЗ v4 — добавлена «📈 Выдача» в пару с «💰 Цена»)
-    assert len(kb.inline_keyboard) == 5
+    assert any("Исправить" in t for t in all_texts)
+    assert any("На другую модель" in t for t in all_texts)
+    # 4 ряда: Выложить / Исправить / На другую модель / Не надо (раздел 3 ТЗ v7)
+    assert len(kb.inline_keyboard) == 4
 
 
 def test_product_detail_kb_keeps_secondary_actions():
+    """Раздел 3 ТЗ v7: карточка товара — 5 кнопок, без Выдача/Конкуренты и без
+    «Пакет на модели» (код clone_product.py остаётся рабочим, просто не здесь)."""
     kb = product_detail_kb(1)
     all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
     assert any("Фото" in t for t in all_texts)
-    assert any("Конкуренты" in t for t in all_texts)
+    assert not any("Конкуренты" in t for t in all_texts)
+    assert not any("Выдача" in t for t in all_texts)
+    assert not any("Пакет" in t for t in all_texts)
     assert any("Выложить" in t for t in all_texts)  # раздел 4.1 ТЗ v5: «✅ Опубликовать» → «🚀 Выложить»
-    assert any("Клон" in t for t in all_texts)
+    assert any("На другую модель" in t for t in all_texts)
+    assert any("Исправить" in t for t in all_texts)
+    assert any("Инфографика" in t for t in all_texts)
+    assert len(kb.inline_keyboard) == 5
 
 
 # --- D1/D2. /list → «Открыть» → карточка товара -----------------------------------
@@ -176,7 +187,72 @@ async def test_open_product_shows_preview_and_detail_actions(session):
     last_kb = callback.message.answered_kb[-1]
     all_texts = [btn.text for row in last_kb.inline_keyboard for btn in row]
     assert any("Фото" in t for t in all_texts)
-    assert any("Пакет" in t for t in all_texts)
+    assert any("На другую модель" in t for t in all_texts)
+
+
+# --- Раздел 3 ТЗ v7: короткое меню «Исправить» (Название/Цена/Фото/Назад к карточке)
+
+
+@pytest.mark.asyncio
+async def test_quick_edit_menu_shows_four_options(session):
+    service, product_id = await _make_ready_product(session, telegram_id=111)
+    callback = _FakeCallback(f"quickedit:{product_id}")
+
+    await list_products.quick_edit_menu(callback)
+
+    kb = callback.message.answered_kb[-1]
+    all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert all_texts == ["Название", "Цена", "Фото", "Назад к карточке"]
+
+
+@pytest.mark.asyncio
+async def test_quick_edit_field_title_then_enter_value_updates_product(session):
+    from app.bot.states import EditProductStates
+
+    service, product_id = await _make_ready_product(session, telegram_id=112)
+    state = _make_state(112)
+
+    field_cb = _FakeCallback(f"quickeditfield:{product_id}:title")
+    await list_products.quick_edit_field(field_cb, state)
+
+    assert await state.get_state() == EditProductStates.entering_value.state
+    assert "Название" in field_cb.message.answered[-1]
+
+    value_msg = _FakeMessage("Новое название", user=_FakeUser(112))
+    await list_products.enter_value(value_msg, state, service)
+
+    product = await service.get_product(product_id)
+    assert product.title == "Новое название"
+    assert await state.get_state() is None
+
+
+@pytest.mark.asyncio
+async def test_quick_edit_field_price_then_enter_value_updates_product(session):
+    service, product_id = await _make_ready_product(session, telegram_id=113)
+    state = _make_state(113)
+
+    field_cb = _FakeCallback(f"quickeditfield:{product_id}:price")
+    await list_products.quick_edit_field(field_cb, state)
+    assert "Цена" in field_cb.message.answered[-1]
+
+    value_msg = _FakeMessage("1234.50", user=_FakeUser(113))
+    await list_products.enter_value(value_msg, state, service)
+
+    product = await service.get_product(product_id)
+    assert float(product.price) == 1234.5
+
+
+@pytest.mark.asyncio
+async def test_quick_edit_back_shows_product_detail_card(session):
+    service, product_id = await _make_ready_product(session, telegram_id=114)
+    callback = _FakeCallback(f"quickeditback:{product_id}")
+
+    await list_products.quick_edit_back(callback, service)
+
+    assert any("ALICARTUNING / Накладки зеркал" in t for t in callback.message.answered)
+    last_kb = callback.message.answered_kb[-1]
+    all_texts = [btn.text for row in last_kb.inline_keyboard for btn in row]
+    assert any("Выложить" in t for t in all_texts)
 
 
 @pytest.mark.asyncio

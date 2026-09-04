@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
 from app.bot.handlers.new_product import render_preview, resume_state_for_product, try_generate_ai_content
-from app.bot.keyboards import drafts_kb, open_product_kb, product_detail_kb
+from app.bot.keyboards import drafts_kb, open_product_kb, product_detail_kb, quickedit_kb
 from app.bot.states import EditProductStates
 from app.db.models import ProductStatus
 
@@ -45,6 +45,22 @@ async def cmd_list(message: Message, product_service) -> None:
     await message.answer("\n".join(lines), reply_markup=open_product_kb([p.id for p in products]))
 
 
+async def show_product_detail(answer, product_service, product_id: int) -> None:
+    """Карточка товара («Мои товары» → «Открыть», и «Назад к карточке» из
+    короткого меню правки) — раздел D2 ТЗ и раздел 3 ТЗ v7: вынесено отдельно
+    от CallbackQuery, чтобы им мог пользоваться и open_product, и quick_edit_back."""
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await answer(texts.NOT_FOUND)
+        return
+
+    preview_text, _ = await render_preview(product_service, product_id)
+    shops_summary = texts.shop_listings_summary(product.shop_listings)
+    if shops_summary:
+        preview_text = f"{preview_text}\n\n{shops_summary}"
+    await answer(preview_text, reply_markup=product_detail_kb(product_id))
+
+
 @router.callback_query(F.data.startswith("open:"))
 async def open_product(callback: CallbackQuery, product_service) -> None:
     """«Открыть #ID» из /list — раздел D2 ТЗ: короткое превью товара + весь
@@ -52,17 +68,7 @@ async def open_product(callback: CallbackQuery, product_service) -> None:
     прямо в общем списке."""
     product_id = int(callback.data.split(":")[1])
     await callback.answer()
-
-    product = await product_service.get_product(product_id)
-    if product is None:
-        await callback.message.answer(texts.NOT_FOUND)
-        return
-
-    preview_text, _ = await render_preview(product_service, product_id)
-    shops_summary = texts.shop_listings_summary(product.shop_listings)
-    if shops_summary:
-        preview_text = f"{preview_text}\n\n{shops_summary}"
-    await callback.message.answer(preview_text, reply_markup=product_detail_kb(product_id))
+    await show_product_detail(callback.message.answer, product_service, product_id)
 
 
 async def send_drafts(answer, from_user, product_service) -> None:
@@ -150,10 +156,46 @@ async def cmd_edit(message: Message, state: FSMContext, product_service) -> None
 @router.callback_query(F.data.startswith("edit:"))
 async def edit_from_preview(callback: CallbackQuery, state: FSMContext, product_service) -> None:
     """«✏️ Править» из превью — раздел G ТЗ: сразу открывает выбор поля, а не
-    отправляет пользователя вручную набирать /edit [ID]."""
+    отправляет пользователя вручную набирать /edit [ID]. Полный список из 9
+    полей остаётся доступен через /edit [ID] руками — на превью и карточке
+    товара теперь ведёт короткое меню quickedit (см. ниже, раздел 3 ТЗ v7)."""
     product_id = int(callback.data.split(":")[1])
     await callback.answer()
     await start_edit(callback.message.answer, state, product_service, product_id)
+
+
+QUICKEDIT_FIELDS = {
+    "title": "Название",
+    "price": "Цена",
+}
+
+
+@router.callback_query(F.data.startswith("quickedit:"))
+async def quick_edit_menu(callback: CallbackQuery) -> None:
+    """«✏️ Исправить» на превью и на карточке товара — раздел 3 ТЗ v7:
+    короткое меню (Название/Цена/Фото/Назад к карточке) вместо полного
+    списка из 9 полей — заказчику чаще всего нужно поправить одно из этих."""
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+    await callback.message.answer(f"Что поправим у товара #{product_id}?", reply_markup=quickedit_kb(product_id))
+
+
+@router.callback_query(F.data.startswith("quickeditfield:"))
+async def quick_edit_field(callback: CallbackQuery, state: FSMContext) -> None:
+    _, product_id_raw, field_name = callback.data.split(":")
+    product_id = int(product_id_raw)
+    label = QUICKEDIT_FIELDS.get(field_name, field_name)
+    await state.set_state(EditProductStates.entering_value)
+    await state.update_data(product_id=product_id, field_name=field_name)
+    await callback.answer()
+    await callback.message.answer(f"Введите новое значение для «{label}»:")
+
+
+@router.callback_query(F.data.startswith("quickeditback:"))
+async def quick_edit_back(callback: CallbackQuery, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+    await show_product_detail(callback.message.answer, product_service, product_id)
 
 
 async def start_edit(answer, state: FSMContext, product_service, product_id: int) -> None:
