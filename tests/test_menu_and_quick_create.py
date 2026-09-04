@@ -116,6 +116,75 @@ async def test_menu_more_shows_commands():
     assert message.answered == [texts.MORE_MENU]
 
 
+# --- v6, раздел 5: экран «Ещё» без слэшей, кнопки Черновики/Категории Ozon -------
+
+
+@pytest.mark.asyncio
+async def test_more_menu_has_no_slash_commands():
+    assert "/drafts" not in texts.MORE_MENU
+    assert "/edit" not in texts.MORE_MENU
+    assert "/synccategories" not in texts.MORE_MENU
+    assert "/market" not in texts.MORE_MENU
+    assert "/shop" not in texts.MORE_MENU
+
+
+@pytest.mark.asyncio
+async def test_more_drafts_button_reuses_cmd_drafts_code(session):
+    service = ProductService(session)
+    await service.get_or_create_user(telegram_id=30, username="u", full_name="U")
+    callback = _FakeCallback("moredrafts", user=_FakeUser(30))
+    await common.more_drafts(callback, service)
+    assert callback.message.answered == [texts.NO_DRAFTS]
+
+
+@pytest.mark.asyncio
+async def test_more_sync_categories_button_rejects_non_admin(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", "999")
+    callback = _FakeCallback("moresynccategories", user=_FakeUser(30))
+    await common.more_sync_categories(callback, session)
+    assert any("только администраторам" in t for t in callback.message.answered)
+
+
+@pytest.mark.asyncio
+async def test_more_sync_categories_button_calls_sync_for_admin(session, monkeypatch):
+    from app.bot.handlers import admin as admin_handler
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", "30")
+
+    async def fake_sync(session):
+        return 42
+
+    monkeypatch.setattr(admin_handler, "sync_ozon_category_tree", fake_sync)
+
+    callback = _FakeCallback("moresynccategories", user=_FakeUser(30))
+    await common.more_sync_categories(callback, session)
+    assert any("обновлён: 42" in t for t in callback.message.answered)
+
+
+@pytest.mark.asyncio
+async def test_edit_and_status_without_id_give_guidance_not_traceback():
+    edit_message = _FakeMessage("/edit", user=_FakeUser(1))
+    await list_products.cmd_edit(edit_message, _make_state(1), product_service=None)
+    assert edit_message.answered == [texts.EDIT_NO_ID]
+
+    status_message = _FakeMessage("/status", user=_FakeUser(1))
+    await list_products.cmd_status(status_message, product_service=None)
+    assert status_message.answered == [texts.STATUS_NO_ID]
+
+
+@pytest.mark.asyncio
+async def test_text_cancel_synonym_clears_state():
+    state = _make_state(1)
+    await state.set_state(NewProductStates.title)
+    message = _FakeMessage("отмена", user=_FakeUser(1))
+    await common.text_cancel(message, state)
+    assert message.answered == [texts.CANCELLED]
+    assert await state.get_state() is None
+
+
 # --- B. Быстрое создание товара ------------------------------------------------
 
 

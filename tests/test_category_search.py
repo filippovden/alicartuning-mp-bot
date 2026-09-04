@@ -64,17 +64,20 @@ async def test_search_ozon_categories_filters_leaves_only(session):
 @pytest.mark.asyncio
 @respx.mock
 async def test_sync_ozon_category_tree_flattens_and_stores(session):
-    respx.post(f"{OZON_BASE_URL}/v2/category/tree").mock(
+    # v6: Ozon отключил /v2/category/tree — актуальный эндпоинт /v1/description-category/tree
+    # с полем description_category_id (см. tests/test_ozon_category_tree.py).
+    respx.post(f"{OZON_BASE_URL}/v1/description-category/tree").mock(
         return_value=httpx.Response(
             200,
             json={
                 "result": [
                     {
-                        "category_id": 100,
+                        "description_category_id": 100,
                         "category_name": "Автозапчасти",
+                        "disabled": False,
                         "children": [
-                            {"type_id": 200, "type_name": "Накладки на зеркала", "children": []},
-                            {"type_id": 201, "type_name": "Спойлеры", "children": []},
+                            {"type_id": 200, "type_name": "Накладки на зеркала", "disabled": False, "children": []},
+                            {"type_id": 201, "type_name": "Спойлеры", "disabled": False, "children": []},
                         ],
                     }
                 ]

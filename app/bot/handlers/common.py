@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.handlers import analytics, list_products, reviews
+from app.bot.handlers import admin, analytics, list_products, reviews
 from app.bot.keyboards import (
     MENU_ANALYTICS,
     MENU_CLONE,
@@ -14,6 +14,7 @@ from app.bot.keyboards import (
     MENU_REVIEWS,
     clone_pick_kb,
     main_menu_kb,
+    more_menu_kb,
     new_product_mode_kb,
 )
 
@@ -45,6 +46,13 @@ async def cmd_help(message: Message) -> None:
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(texts.CANCELLED, reply_markup=main_menu_kb())
+
+
+@router.message(F.text.lower() == "отмена")
+async def text_cancel(message: Message, state: FSMContext) -> None:
+    """Текстовый синоним /cancel — раздел 5 ТЗ v6: заказчик не обязан помнить
+    слэш-команды, чтобы выйти из текущего шага."""
+    await cmd_cancel(message, state)
 
 
 # --- Постоянное меню (раздел A ТЗ) — основной путь для обычного пользователя,
@@ -97,7 +105,25 @@ async def menu_analytics(message: Message, product_service, session) -> None:
 
 @router.message(F.text == MENU_MORE)
 async def menu_more(message: Message) -> None:
-    await message.answer(texts.MORE_MENU)
+    await message.answer(texts.MORE_MENU, reply_markup=more_menu_kb())
+
+
+@router.callback_query(F.data == "moredrafts")
+async def more_drafts(callback: CallbackQuery, product_service) -> None:
+    """«Черновики» на экране «Ещё» — тот же код, что /drafts (раздел 5 ТЗ v6)."""
+    await callback.answer()
+    await list_products.send_drafts(callback.message.answer, callback.from_user, product_service)
+
+
+@router.callback_query(F.data == "moresynccategories")
+async def more_sync_categories(callback: CallbackQuery, session) -> None:
+    """«Категории Ozon» на экране «Ещё» — тот же код, что /synccategories,
+    админская операция под кнопкой, а не слэшем (раздел 5 ТЗ v6)."""
+    await callback.answer()
+    if not admin.is_admin_id(callback.from_user.id):
+        await callback.message.answer("Команда доступна только администраторам.")
+        return
+    await admin.sync_categories(callback.message.answer, session)
 
 
 # --- Fallback на «мёртвые» кнопки (Senior Backend, п.2 ТЗ) ------------------------

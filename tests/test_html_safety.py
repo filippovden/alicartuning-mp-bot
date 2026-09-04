@@ -28,7 +28,10 @@ def test_texts_module_has_no_disallowed_html_tags():
 
 
 def test_welcome_and_more_menu_use_square_bracket_placeholders():
+    # v6: экран «Ещё» больше не перечисляет слэш-команды (раздел 5 ТЗ v6) —
+    # регрессия про угловые скобки в плейсхолдерах остаётся актуальной для
+    # оставшихся текстов с плейсхолдерами вида /edit [ID].
     assert "<" not in texts.WELCOME
     assert "<" not in texts.MORE_MENU
-    assert "/edit [ID]" in texts.MORE_MENU
-    assert "/status [ID]" in texts.MORE_MENU
+    assert "<" not in texts.EDIT_NO_ID
+    assert "<" not in texts.STATUS_NO_ID

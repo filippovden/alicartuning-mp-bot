@@ -11,15 +11,18 @@ BASE_URL = "https://api-seller.ozon.ru"
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_category_tree():
-    respx.post(f"{BASE_URL}/v2/category/tree").mock(
+    """Раздел 1.1 ТЗ v6: актуальный эндпоинт — /v1/description-category/tree,
+    /v2/category/tree Ozon отключил (см. tests/test_ozon_category_tree.py про 404)."""
+    respx.post(f"{BASE_URL}/v1/description-category/tree").mock(
         return_value=httpx.Response(
             200,
             json={
                 "result": [
                     {
-                        "category_id": 100,
+                        "description_category_id": 100,
                         "category_name": "Автозапчасти",
-                        "children": [{"type_id": 200, "type_name": "Тюнинг", "children": []}],
+                        "disabled": False,
+                        "children": [{"type_id": 200, "type_name": "Тюнинг", "disabled": False, "children": []}],
                     }
                 ]
             },

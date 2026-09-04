@@ -8,8 +8,16 @@ from app.services.marketplaces.base import (
     CategoryAttribute,
     CategoryNode,
     ImageUploadResult,
+    MarketplaceAPIError,
     PublishResult,
 )
+
+# Ozon отключил /v2/category/tree в пользу /v1/description-category/tree
+# (актуально на 2026) — старый эндпоинт отдаёт 404 на весь путь целиком.
+# Раздел 1 ТЗ v6: новый эндпоинт первым, один запасной заход на старый при 404.
+NEW_CATEGORY_TREE_PATH = "/v1/description-category/tree"
+OLD_CATEGORY_TREE_PATH = "/v2/category/tree"
+NO_API_KEY_STATUS_CODE = 0  # сентинел: настоящих HTTP-статусов 0 не бывает
 
 
 class OzonClient(BaseMarketplaceClient):
@@ -32,16 +40,38 @@ class OzonClient(BaseMarketplaceClient):
             "Content-Type": "application/json",
         }
 
+    async def _fetch_category_tree_result(self) -> list[dict]:
+        """Тело result[] дерева категорий — общая точка для get_category_tree и
+        get_category_leaves (раздел 1.1, 1.3 ТЗ v6). Ozon отключил /v2/category/tree
+        в 2026 — сначала актуальный /v1/description-category/tree, и только если
+        он вернул 404 (эндпоинт не подключён для этого продавца/региона), один
+        запасной заход на старый URL. Без ключа — сразу понятная ошибка, без
+        похода в сеть."""
+        if not self.client_id or not self.api_key:
+            raise MarketplaceAPIError("Нет ключа Ozon (Client-Id/Api-Key).", status_code=NO_API_KEY_STATUS_CODE)
+
+        try:
+            response = await self._request("POST", NEW_CATEGORY_TREE_PATH, json_body={"language": "RU"})
+            return response.json().get("result", [])
+        except MarketplaceAPIError as exc:
+            if exc.status_code != 404:
+                raise
+            response = await self._request("POST", OLD_CATEGORY_TREE_PATH, json_body={})
+            return response.json().get("result", [])
+
     async def get_category_tree(self) -> list[CategoryNode]:
-        """POST /v2/category/tree — дерево категорий Ozon."""
-        response = await self._request("POST", "/v2/category/tree", json_body={})
-        result = response.json().get("result", [])
+        """Дерево категорий Ozon — плоский список узлов для админки/отладки
+        (раздел 1.1 ТЗ v6). Полноценный подбор категории при создании товара
+        идёт через get_category_leaves, не через этот метод."""
+        result = await self._fetch_category_tree_result()
 
         nodes: list[CategoryNode] = []
 
         def walk(items: list[dict], parent_id: int | None = None) -> None:
             for item in items:
-                node_id = item.get("category_id") or item.get("type_id")
+                if item.get("disabled"):
+                    continue
+                node_id = item.get("description_category_id", item.get("category_id")) or item.get("type_id")
                 nodes.append(
                     CategoryNode(
                         id=node_id,
@@ -61,14 +91,23 @@ class OzonClient(BaseMarketplaceClient):
         указывать при создании товара в POST /v2/product/import. Ozon не даёт поиск
         категорий по имени, поэтому листья кэшируются в БД (OzonCategoryNode) и
         фильтруются локально — см. app/services/category_search.py.
+
+        Ключ словаря остаётся "category_id" (так называется и колонка БД —
+        раздел 1.1 ТЗ v6: колонки не переименовываем), но его значение теперь
+        берётся из description_category_id актуального дерева. Отключённые
+        (disabled: true) узлы пропускаются целиком — в них товар не создать.
         """
-        response = await self._request("POST", "/v2/category/tree", json_body={})
-        result = response.json().get("result", [])
+        result = await self._fetch_category_tree_result()
 
         leaves: list[dict[str, Any]] = []
 
+        def node_id(item: dict) -> int | str | None:
+            return item.get("description_category_id", item.get("category_id"))
+
         def walk(items: list[dict], category_id: int | None, category_name: str | None) -> None:
             for item in items:
+                if item.get("disabled"):
+                    continue
                 if item.get("type_id"):
                     leaves.append(
                         {
@@ -81,7 +120,7 @@ class OzonClient(BaseMarketplaceClient):
                     if item.get("children"):
                         walk(item["children"], category_id, category_name)
                 else:
-                    next_category_id = item.get("category_id", category_id)
+                    next_category_id = node_id(item) if node_id(item) is not None else category_id
                     next_category_name = item.get("category_name", category_name)
                     if item.get("children"):
                         walk(item["children"], next_category_id, next_category_name)
@@ -90,11 +129,13 @@ class OzonClient(BaseMarketplaceClient):
         return leaves
 
     async def get_category_attributes(self, category_id: int, type_id: int) -> list[CategoryAttribute]:
-        """POST /v2/category/attribute/values (список атрибутов категории с ID)."""
+        """POST /v1/description-category/attribute — атрибуты категории
+        (актуальный эндпоинт на 2026, раздел 1.2 ТЗ v6; /v3/category/attribute
+        отключён Ozon вместе со старым деревом)."""
         response = await self._request(
             "POST",
-            "/v3/category/attribute",
-            json_body={"category_id": category_id, "type_id": type_id, "language": "RU"},
+            "/v1/description-category/attribute",
+            json_body={"description_category_id": category_id, "type_id": type_id, "language": "RU"},
         )
         result = response.json().get("result", [])
         return [
@@ -109,11 +150,18 @@ class OzonClient(BaseMarketplaceClient):
         ]
 
     async def get_attribute_values(self, attribute_id: int, category_id: int, type_id: int) -> list[dict[str, Any]]:
-        """POST /v2/category/attribute/values — справочник значений атрибута (если dictionary)."""
+        """POST /v1/description-category/attribute/values — справочник значений
+        атрибута (актуальный эндпоинт на 2026, раздел 1.2 ТЗ v6)."""
         response = await self._request(
             "POST",
-            "/v2/category/attribute/values",
-            json_body={"attribute_id": attribute_id, "category_id": category_id, "type_id": type_id},
+            "/v1/description-category/attribute/values",
+            json_body={
+                "attribute_id": attribute_id,
+                "description_category_id": category_id,
+                "type_id": type_id,
+                "limit": 100,
+                "language": "RU",
+            },
         )
         return response.json().get("result", [])
 

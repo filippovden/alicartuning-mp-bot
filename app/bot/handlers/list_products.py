@@ -65,23 +65,30 @@ async def open_product(callback: CallbackQuery, product_service) -> None:
     await callback.message.answer(preview_text, reply_markup=product_detail_kb(product_id))
 
 
+async def send_drafts(answer, from_user, product_service) -> None:
+    """Тело /drafts, вынесенное отдельно от Message — раздел 5 ТЗ v6: кнопка
+    «Черновики» на экране «Ещё» зовёт тот же код через callback.message.answer,
+    а from_user там — callback.from_user (человек, нажавший кнопку), не бот."""
+    user = await product_service.get_or_create_user(
+        telegram_id=from_user.id,
+        username=from_user.username,
+        full_name=from_user.full_name,
+    )
+    drafts = await product_service.list_products(user.id, status=ProductStatus.DRAFT)
+    if not drafts:
+        await answer(texts.NO_DRAFTS)
+        return
+
+    lines = [texts.draft_list_item(p) for p in drafts]
+    await answer("\n".join(lines), reply_markup=drafts_kb([p.id for p in drafts]))
+
+
 @router.message(Command("drafts"))
 async def cmd_drafts(message: Message, product_service) -> None:
     """Незаконченные черновики (status=draft) с кнопкой «Продолжить» — раздел C.5
     ТЗ: раньше недописанный товар было легко забросить без единого способа
     вернуться к нему без ручного /edit."""
-    user = await product_service.get_or_create_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
-    )
-    drafts = await product_service.list_products(user.id, status=ProductStatus.DRAFT)
-    if not drafts:
-        await message.answer(texts.NO_DRAFTS)
-        return
-
-    lines = [texts.draft_list_item(p) for p in drafts]
-    await message.answer("\n".join(lines), reply_markup=drafts_kb([p.id for p in drafts]))
+    await send_drafts(message.answer, message.from_user, product_service)
 
 
 @router.callback_query(F.data.startswith("continuedraft:"))
@@ -117,7 +124,7 @@ async def continue_draft(callback: CallbackQuery, state: FSMContext, product_ser
 async def cmd_status(message: Message, product_service) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Использование: /status [ID товара]")
+        await message.answer(texts.STATUS_NO_ID)
         return
 
     product = await product_service.get_product(int(args[1]))
@@ -135,7 +142,7 @@ async def cmd_status(message: Message, product_service) -> None:
 async def cmd_edit(message: Message, state: FSMContext, product_service) -> None:
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].strip().isdigit():
-        await message.answer("Использование: /edit [ID товара]")
+        await message.answer(texts.EDIT_NO_ID)
         return
     await start_edit(message.answer, state, product_service, int(args[1]))
 

@@ -205,6 +205,16 @@ def category_match_kb(prefix: str, labels: list[str]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def more_menu_kb() -> InlineKeyboardMarkup:
+    """Экран «⚙️ Ещё» — раздел 5 ТЗ v6: заказчик не айтишник, поэтому вместо
+    простыни слэш-команд — две кнопки на самое нужное. /market и /shop сюда
+    сознательно не выносятся, пока витрина WB отдаёт 403/429 с сервера."""
+    builder = InlineKeyboardBuilder()
+    builder.row(_btn("📝 Черновики", "moredrafts"))
+    builder.row(_btn("🗂 Категории Ozon", "moresynccategories"))
+    return builder.as_markup()
+
+
 def reviews_reply_kb(review_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🤖 Ответить автоматически", callback_data=f"review_auto:{review_id}")

@@ -821,7 +821,7 @@ async def test_K_admin_sync_categories(session, monkeypatch):
             monkeypatch.setattr(settings, "telegram_admin_ids", "111")
             msg = _FakeMessage("/synccategories", user=_FakeUser(111))
             await admin.cmd_sync_categories(msg, session)
-            assert any("Готово" in t for t in msg.answered)
+            assert any("обновлён" in t for t in msg.answered)
 
             monkeypatch.setattr(settings, "telegram_admin_ids", "111")
             msg2 = _FakeMessage("/synccategories", user=_FakeUser(999))
