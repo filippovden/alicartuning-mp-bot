@@ -25,6 +25,20 @@ WB_SELLER_LINK_RE = re.compile(r"seller/(\d+)")
 
 STOPWORDS = {"для", "с", "и", "на", "в", "от", "по", "к", "из", "или", "не", "без", "под"}
 
+# Эти неофициальные публичные эндпоинты витрины WB отдают 403 Forbidden без
+# «браузерных» заголовков — httpx по умолчанию шлёт User-Agent вида
+# "python-httpx/0.x", который WB распознаёт как бота и блокирует (особенно
+# строго на catalog.wb.ru — search.wb.ru пропускал чаще, но тоже не гарантия).
+WB_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.wildberries.ru/",
+}
+
 
 class CompetitorAnalysisError(Exception):
     pass
@@ -98,7 +112,7 @@ async def search_wb_competitors(query: str, limit: int = 20, exclude_brand: str 
         "spp": 30,
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=WB_BROWSER_HEADERS) as client:
             response = await client.get(WB_SEARCH_URL, params=params)
             response.raise_for_status()
             payload = response.json()
@@ -150,7 +164,7 @@ async def fetch_wb_shop(seller_id: str, max_pages: int = 3, limit: int = 100) ->
     официальный API не бывает, поэтому обёрнуто в те же понятные ошибки)."""
     items: list[CompetitorItem] = []
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=WB_BROWSER_HEADERS) as client:
             for page in range(1, max_pages + 1):
                 params = {"dest": -1257786, "supplier": seller_id, "curr": "rub", "spp": 30, "page": page}
                 response = await client.get(WB_SELLER_CATALOG_URL, params=params)

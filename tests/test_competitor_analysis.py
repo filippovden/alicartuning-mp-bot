@@ -44,6 +44,30 @@ async def test_search_wb_competitors_parses_prices():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_search_wb_competitors_sends_browser_like_headers():
+    """catalog.wb.ru/search.wb.ru отдают 403 без «браузерных» заголовков —
+    дефолтный httpx User-Agent ("python-httpx/...") WB распознаёт как бота."""
+    route = respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(200, json={"data": {"products": []}}))
+    await search_wb_competitors("что-то")
+    sent_headers = route.calls[0].request.headers
+    assert "python-httpx" not in sent_headers["user-agent"]
+    assert "Mozilla" in sent_headers["user-agent"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_sends_browser_like_headers():
+    route = respx.get(WB_SELLER_CATALOG_URL).mock(
+        return_value=httpx.Response(200, json={"data": {"products": [{"name": "x", "salePriceU": 100000}]}})
+    )
+    await fetch_wb_shop("12345", max_pages=1)
+    sent_headers = route.calls[0].request.headers
+    assert "python-httpx" not in sent_headers["user-agent"]
+    assert "Mozilla" in sent_headers["user-agent"]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_search_wb_competitors_network_error_raises():
     respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(500))
     with pytest.raises(CompetitorAnalysisError):
