@@ -59,6 +59,9 @@ async def open_product(callback: CallbackQuery, product_service) -> None:
         return
 
     preview_text, _ = await render_preview(product_service, product_id)
+    shops_summary = texts.shop_listings_summary(product.shop_listings)
+    if shops_summary:
+        preview_text = f"{preview_text}\n\n{shops_summary}"
     await callback.message.answer(preview_text, reply_markup=product_detail_kb(product_id))
 
 

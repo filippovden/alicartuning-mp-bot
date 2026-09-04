@@ -87,3 +87,102 @@ async def test_publish_to_ozon_api_error_is_reported(session):
 
     assert log.status == PublishStatus.ERROR
     assert "category_id" in log.message
+
+
+# --- Мультимагазинность (срез v5): publish_to_shop -----------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_shop_two_ozon_shops_get_different_offer_id_and_name(session, monkeypatch):
+    import json
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "ozon-salon", "name": "Ozon Салон", "platform": "ozon", "client_id": "1", "api_key": "TOK1"},'
+        '{"id": "ozon-kuzov", "name": "Ozon Кузов", "platform": "ozon", "client_id": "2", "api_key": "TOK2"}]',
+    )
+
+    service, product = await _make_product(
+        session, telegram_id=10, vendor_code="OZ-BASE", ozon_category_id=100, ozon_type_id=200
+    )
+    await service.update_fields(
+        product.id,
+        description="Подробное описание товара для прохождения валидации карточки." * 2,
+        weight_g=300,
+        length_mm=200,
+        width_mm=150,
+        height_mm=50,
+    )
+    from app.db.models import StorageFile
+
+    storage_file = StorageFile(path="/tmp/o.jpg", url="https://cdn.example.com/o.jpg", content_type="image/jpeg")
+    session.add(storage_file)
+    await session.commit()
+    await session.refresh(storage_file)
+    await service.add_image(product.id, storage_file.id, image_type="main", position=0)
+
+    import_route = respx.post(f"{OZON_BASE_URL}/v2/product/import").mock(
+        return_value=httpx.Response(200, json={"result": {"task_id": 555}})
+    )
+
+    listing1 = await service.publish_to_shop(product.id, "ozon-salon")
+    listing2 = await service.publish_to_shop(product.id, "ozon-kuzov")
+
+    assert listing1.vendor_code != listing2.vendor_code
+    assert listing1.title != listing2.title
+    assert listing1.status.value == "published"
+    assert listing2.status.value == "published"
+
+    body1 = json.loads(import_route.calls[0].request.content)
+    body2 = json.loads(import_route.calls[1].request.content)
+    assert body1["items"][0]["offer_id"] != body2["items"][0]["offer_id"]
+    assert body1["items"][0]["name"] != body2["items"][0]["name"]
+    assert body1["items"][0]["offer_id"] != "OZ-BASE"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_shop_ozon_second_call_does_not_republish(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "ozon-salon", "name": "Ozon Салон", "platform": "ozon", "client_id": "1", "api_key": "TOK1"}]',
+    )
+
+    service, product = await _make_product(
+        session, telegram_id=11, vendor_code="OZ-BASE2", ozon_category_id=100, ozon_type_id=200
+    )
+    await service.update_fields(
+        product.id,
+        description="Подробное описание товара для прохождения валидации карточки." * 2,
+        weight_g=300,
+        length_mm=200,
+        width_mm=150,
+        height_mm=50,
+    )
+    from app.db.models import StorageFile
+
+    storage_file = StorageFile(path="/tmp/o2.jpg", url="https://cdn.example.com/o2.jpg", content_type="image/jpeg")
+    session.add(storage_file)
+    await session.commit()
+    await session.refresh(storage_file)
+    await service.add_image(product.id, storage_file.id, image_type="main", position=0)
+
+    import_route = respx.post(f"{OZON_BASE_URL}/v2/product/import").mock(
+        return_value=httpx.Response(200, json={"result": {"task_id": 111}})
+    )
+
+    first = await service.publish_to_shop(product.id, "ozon-salon")
+    assert import_route.call_count == 1
+
+    second = await service.publish_to_shop(product.id, "ozon-salon")
+    assert import_route.call_count == 1
+    assert second.id == first.id

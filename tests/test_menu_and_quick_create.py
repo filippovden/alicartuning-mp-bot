@@ -29,9 +29,16 @@ class _FakeMessage:
         self.text = text
         self.from_user = user or _FakeUser(1)
         self.answered: list[str] = []
+        self.answered_markups: list[object] = []
+        self.edited_markups: list[object] = []
 
     async def answer(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
         self.answered.append(text)
+        self.answered_markups.append(reply_markup)
+        return self
+
+    async def edit_reply_markup(self, reply_markup=None, **kwargs) -> "_FakeMessage":
+        self.edited_markups.append(reply_markup)
         return self
 
 
@@ -40,9 +47,10 @@ class _FakeCallback:
         self.data = data
         self.from_user = user or _FakeUser(1)
         self.message = _FakeMessage(user=self.from_user)
+        self.alerts: list[tuple[str | None, bool]] = []
 
     async def answer(self, text: str | None = None, show_alert: bool = False) -> None:
-        return None
+        self.alerts.append((text, show_alert))
 
 
 def _make_state(user_id: int) -> FSMContext:
@@ -487,3 +495,239 @@ async def test_quick_create_album_of_three_photos_answers_once(session, monkeypa
 
     data = await state.get_data()
     assert len(data["photos"]) == 3
+
+
+# --- Раздел 4 ТЗ v5: экран выбора магазинов перед публикацией ------------------
+
+
+async def _make_publishable_product(session, telegram_id: int, vendor_code: str) -> tuple[ProductService, int]:
+    service = ProductService(session)
+    user = await service.get_or_create_user(telegram_id=telegram_id, username="u", full_name="U")
+    category = Category(name=f"Категория {vendor_code}", wb_subject_id=100, ozon_category_id=200, ozon_type_id=300)
+    session.add(category)
+    await session.commit()
+    await session.refresh(category)
+
+    product = await service.create_draft(user.id)
+    await service.update_fields(
+        product.id,
+        title=f"ALICARTUNING / {vendor_code}",
+        brand="ALICARTUNING",
+        vendor_code=vendor_code,
+        price=1500,
+        category_id=category.id,
+        description="Подробное описание товара для прохождения валидации." * 2,
+        weight_g=300,
+        length_mm=200,
+        width_mm=150,
+        height_mm=50,
+    )
+    storage_file = StorageFile(path="/tmp/p.jpg", url="https://cdn.example.com/p.jpg", content_type="image/jpeg")
+    session.add(storage_file)
+    await session.commit()
+    await session.refresh(storage_file)
+    await service.add_image(product.id, storage_file.id, image_type="main", position=0)
+    return service, product.id
+
+
+@pytest.mark.asyncio
+async def test_confirm_publish_skips_shop_picker_with_single_shop_per_platform(session, monkeypatch):
+    """Раздел 4.2 ТЗ v5: не больше одного WB и одного Ozon в системе —
+    публикуем сразу, без экрана выбора (как раньше)."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "shops_json", "")
+    monkeypatch.setattr(settings, "wb_api_key", "")
+    monkeypatch.setattr(settings, "ozon_client_id", "")
+    monkeypatch.setattr(settings, "ozon_api_key", "")
+
+    async def fake_publish(self, product_id):
+        from app.services.product_service import PublishSummary
+
+        return PublishSummary(wb=None, ozon=None)
+
+    monkeypatch.setattr(ProductService, "publish", fake_publish)
+
+    service, product_id = await _make_publishable_product(session, 60, "ART-SKIP")
+    state = _make_state(60)
+    fake_cb = _FakeCallback(f"publish:{product_id}")
+
+    await new_product.confirm_publish(fake_cb, state, service)
+
+    all_texts = fake_cb.message.answered
+    assert not any("Куда выложить" in t for t in all_texts)
+    assert await state.get_state() is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_publish_shows_shop_picker_with_multiple_shops(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"},'
+        '{"id": "wb-kuzov", "name": "WB Кузов", "platform": "wb", "api_key": "T2"}]',
+    )
+
+    service, product_id = await _make_publishable_product(session, 61, "ART-MULTI")
+    state = _make_state(61)
+    fake_cb = _FakeCallback(f"publish:{product_id}")
+
+    await new_product.confirm_publish(fake_cb, state, service)
+
+    assert any("Куда выложить" in t for t in fake_cb.message.answered)
+    assert await state.get_state() == "ShopPickStates:picking"
+    data = await state.get_data()
+    assert data["shoppick_product_id"] == product_id
+    assert data["shoppick_selected"] == []
+
+
+@pytest.mark.asyncio
+async def test_shop_pick_toggle_updates_selection(session, monkeypatch):
+    from app.config import settings
+    from app.bot.states import ShopPickStates
+
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"},'
+        '{"id": "wb-kuzov", "name": "WB Кузов", "platform": "wb", "api_key": "T2"}]',
+    )
+
+    state = _make_state(62)
+    await state.set_state(ShopPickStates.picking)
+    await state.update_data(shoppick_product_id=1, shoppick_selected=[])
+
+    cb1 = _FakeCallback("shoppick:1:wb-salon")
+    await new_product.shop_pick_toggle(cb1, state)
+    data = await state.get_data()
+    assert data["shoppick_selected"] == ["wb-salon"]
+    assert len(cb1.message.edited_markups) == 1
+
+    cb2 = _FakeCallback("shoppick:1:wb-salon")
+    await new_product.shop_pick_toggle(cb2, state)
+    data = await state.get_data()
+    assert data["shoppick_selected"] == []
+
+
+@pytest.mark.asyncio
+async def test_shop_pick_go_without_selection_shows_alert(session, monkeypatch):
+    from app.config import settings
+    from app.bot.states import ShopPickStates
+
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"},'
+        '{"id": "wb-kuzov", "name": "WB Кузов", "platform": "wb", "api_key": "T2"}]',
+    )
+
+    state = _make_state(63)
+    await state.set_state(ShopPickStates.picking)
+    await state.update_data(shoppick_product_id=1, shoppick_selected=[])
+
+    cb = _FakeCallback("shopgo:1")
+    await new_product.shop_pick_go(cb, state)
+
+    assert cb.alerts == [(texts.NEED_AT_LEAST_ONE_SHOP, True)]
+    assert await state.get_state() == "ShopPickStates:picking"
+
+
+@pytest.mark.asyncio
+async def test_shop_pick_go_with_selection_moves_to_confirm(session, monkeypatch):
+    from app.config import settings
+    from app.bot.states import ShopPickStates
+
+    monkeypatch.setattr(
+        settings, "shops_json", '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"}]'
+    )
+
+    state = _make_state(64)
+    await state.set_state(ShopPickStates.picking)
+    await state.update_data(shoppick_product_id=1, shoppick_selected=["wb-salon"])
+
+    cb = _FakeCallback("shopgo:1")
+    await new_product.shop_pick_go(cb, state)
+
+    assert await state.get_state() == "ShopPickStates:confirming"
+    assert any("Выкладываю" in t for t in cb.message.answered)
+    assert any("WB Салон" in t for t in cb.message.answered)
+
+
+@pytest.mark.asyncio
+async def test_shop_confirm_publish_reports_per_shop_lines(session, monkeypatch):
+    from app.config import settings
+    from app.bot.states import ShopPickStates
+    from app.services.product_service import ProductService as PS
+
+    monkeypatch.setattr(
+        settings, "shops_json", '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"}]'
+    )
+
+    async def fake_publish_to_shop(self, product_id, shop_id):
+        from app.db.models import ListingStatus, ShopListing
+
+        return ShopListing(
+            id=1, product_id=product_id, shop_id=shop_id, platform="wildberries",
+            vendor_code="ART-1", wb_nm_id="12345", status=ListingStatus.PUBLISHED,
+            publish_message="карточка (ID 12345), фото: 1",
+        )
+
+    async def fake_get_listing(self, product_id, shop_id):
+        return None
+
+    monkeypatch.setattr(PS, "publish_to_shop", fake_publish_to_shop)
+    monkeypatch.setattr(PS, "get_listing", fake_get_listing)
+
+    service = ProductService(session)
+    state = _make_state(65)
+    await state.set_state(ShopPickStates.confirming)
+    await state.update_data(shoppick_product_id=1, shoppick_selected=["wb-salon"])
+
+    cb = _FakeCallback("shopconfirm:1")
+    await new_product.shop_confirm_publish(cb, state, service)
+
+    assert await state.get_state() is None
+    joined = " ".join(cb.message.answered)
+    assert "WB Салон" in joined
+    assert "готово, номер 12345" in joined
+
+
+@pytest.mark.asyncio
+async def test_shop_confirm_publish_skips_already_live_listing(session, monkeypatch):
+    from app.config import settings
+    from app.bot.states import ShopPickStates
+    from app.services.product_service import ProductService as PS
+
+    monkeypatch.setattr(
+        settings, "shops_json", '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "T1"}]'
+    )
+
+    call_count = {"n": 0}
+
+    async def fake_publish_to_shop(self, product_id, shop_id):
+        call_count["n"] += 1
+        raise AssertionError("не должен вызываться повторно для уже живого listing")
+
+    async def fake_get_listing(self, product_id, shop_id):
+        from app.db.models import ListingStatus, ShopListing
+
+        return ShopListing(
+            id=1, product_id=product_id, shop_id=shop_id, platform="wildberries",
+            vendor_code="ART-1", wb_nm_id="999", status=ListingStatus.PUBLISHED,
+        )
+
+    monkeypatch.setattr(PS, "publish_to_shop", fake_publish_to_shop)
+    monkeypatch.setattr(PS, "get_listing", fake_get_listing)
+
+    service = ProductService(session)
+    state = _make_state(66)
+    await state.set_state(ShopPickStates.confirming)
+    await state.update_data(shoppick_product_id=1, shoppick_selected=["wb-salon"])
+
+    cb = _FakeCallback("shopconfirm:1")
+    await new_product.shop_confirm_publish(cb, state, service)
+
+    assert call_count["n"] == 0
+    assert any("уже выложено" in t for t in cb.message.answered)

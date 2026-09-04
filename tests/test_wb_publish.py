@@ -310,3 +310,154 @@ async def test_publish_to_wb_no_public_url_with_s3_configured_gives_different_re
     assert log.status == PublishStatus.PARTIAL
     assert "нет публичной ссылки на файлы" in log.message
     assert "нужен S3" not in log.message
+
+
+# --- Мультимагазинность (срез v5): publish_to_shop -----------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_shop_two_wb_shops_get_different_payloads(session, monkeypatch):
+    """Раздел 3, 6 ТЗ v5: два магазина одного товара получают РАЗНЫЙ
+    vendorCode/title в payload create_card — иначе площадка видит дубль."""
+    import json
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(
+        settings,
+        "shops_json",
+        '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "TOK1"},'
+        '{"id": "wb-kuzov", "name": "WB Кузов", "platform": "wb", "api_key": "TOK2"}]',
+    )
+
+    service, product_id = await _make_product(session, telegram_id=50, vendor_code="ART-BASE", wb_subject_id=333)
+    await _add_image(session, service, product_id, "https://cdn.example.com/base.jpg")
+
+    await service.update_fields(
+        product_id,
+        description="Подробное описание товара для прохождения валидации карточки." * 2,
+        weight_g=300,
+        length_mm=200,
+        width_mm=150,
+        height_mm=50,
+    )
+
+    upload_route = respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+
+    def cards_list_side_effect(request):
+        body = json.loads(request.content)
+        vendor_code = body["settings"]["filter"].get("textSearch", "")
+        return httpx.Response(200, json={"cards": [{"vendorCode": vendor_code, "nmID": abs(hash(vendor_code)) % 100000}]})
+
+    respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(side_effect=cards_list_side_effect)
+    respx.post(f"{WB_BASE_URL}/content/v2/cards/upload/images").mock(return_value=httpx.Response(200, json={}))
+
+    listing1 = await service.publish_to_shop(product_id, "wb-salon")
+    listing2 = await service.publish_to_shop(product_id, "wb-kuzov")
+
+    assert listing1.vendor_code != listing2.vendor_code
+    assert listing1.title != listing2.title
+    assert listing1.wb_nm_id is not None
+    assert listing2.wb_nm_id is not None
+    assert listing1.wb_nm_id != listing2.wb_nm_id
+    assert listing1.status.value == "published"
+    assert listing2.status.value == "published"
+
+    body1 = json.loads(upload_route.calls[0].request.content)
+    body2 = json.loads(upload_route.calls[1].request.content)
+    assert body1[0]["variants"][0]["vendorCode"] != body2[0]["variants"][0]["vendorCode"]
+    assert body1[0]["variants"][0]["title"] != body2[0]["variants"][0]["title"]
+
+    # Продукт с ключом "ART-BASE" никогда не передаётся ни в один платёж как есть.
+    assert body1[0]["variants"][0]["vendorCode"] != "ART-BASE"
+    assert body2[0]["variants"][0]["vendorCode"] != "ART-BASE"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_to_shop_second_call_same_shop_does_not_republish(session, monkeypatch):
+    import json
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(
+        settings, "shops_json", '[{"id": "wb-salon", "name": "WB Салон", "platform": "wb", "api_key": "TOK1"}]'
+    )
+
+    service, product_id = await _make_product(session, telegram_id=51, vendor_code="ART-BASE2", wb_subject_id=334)
+    await _add_image(session, service, product_id, "https://cdn.example.com/base2.jpg")
+
+    await service.update_fields(
+        product_id,
+        description="Подробное описание товара для прохождения валидации карточки." * 2,
+        weight_g=300,
+        length_mm=200,
+        width_mm=150,
+        height_mm=50,
+    )
+
+    upload_route = respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+
+    def cards_list_side_effect(request):
+        body = json.loads(request.content)
+        vendor_code = body["settings"]["filter"].get("textSearch", "")
+        return httpx.Response(200, json={"cards": [{"vendorCode": vendor_code, "nmID": 777}]})
+
+    respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(side_effect=cards_list_side_effect)
+    respx.post(f"{WB_BASE_URL}/content/v2/cards/upload/images").mock(return_value=httpx.Response(200, json={}))
+
+    first = await service.publish_to_shop(product_id, "wb-salon")
+    assert upload_route.call_count == 1
+
+    second = await service.publish_to_shop(product_id, "wb-salon")
+    assert upload_route.call_count == 1  # второй раз create_card не звался
+    assert second.id == first.id
+    assert second.wb_nm_id == first.wb_nm_id
+
+
+@pytest.mark.asyncio
+async def test_publish_to_shop_default_shop_dual_writes_product_wb_nm_id(session, monkeypatch):
+    """Обратная совместимость (раздел 2 ТЗ v5): публикация в магазин по
+    умолчанию должна дублировать nmID в старую колонку product.wb_nm_id,
+    которую читают /list, /status и остальной код, написанный до v5."""
+    import json
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_api_key", "")
+    monkeypatch.setattr(settings, "shops_json", "")
+    monkeypatch.setattr(settings, "wb_api_key", "old-single-wb-key")
+    monkeypatch.setattr(settings, "ozon_client_id", "")
+    monkeypatch.setattr(settings, "ozon_api_key", "")
+
+    with respx.mock:
+        service, product_id = await _make_product(session, telegram_id=52, vendor_code="ART-BASE3", wb_subject_id=335)
+        await _add_image(session, service, product_id, "https://cdn.example.com/base3.jpg")
+        await service.update_fields(
+            product_id,
+            description="Подробное описание товара для прохождения валидации карточки." * 2,
+            weight_g=300,
+            length_mm=200,
+            width_mm=150,
+            height_mm=50,
+        )
+
+        respx.post(f"{WB_BASE_URL}/content/v2/cards/upload").mock(return_value=httpx.Response(200, json={}))
+
+        def cards_list_side_effect(request):
+            body = json.loads(request.content)
+            vendor_code = body["settings"]["filter"].get("textSearch", "")
+            return httpx.Response(200, json={"cards": [{"vendorCode": vendor_code, "nmID": 999}]})
+
+        respx.post(f"{WB_BASE_URL}/content/v2/get/cards/list").mock(side_effect=cards_list_side_effect)
+        respx.post(f"{WB_BASE_URL}/content/v2/cards/upload/images").mock(return_value=httpx.Response(200, json={}))
+
+        from app.services import shops as shops_service
+
+        listing = await service.publish_to_shop(product_id, shops_service.DEFAULT_WB_SHOP_ID)
+
+        product = await service.get_product(product_id)
+        assert product.wb_nm_id == listing.wb_nm_id == "999"

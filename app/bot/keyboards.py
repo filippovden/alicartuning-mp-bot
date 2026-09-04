@@ -37,7 +37,9 @@ def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
     отсюда (перегружали главный экран) и живут в карточке товара (см.
     product_detail_kb) — там, где до них реально доходит очередь."""
     builder = InlineKeyboardBuilder()
-    builder.row(_btn("✅ Опубликовать на WB и Ozon", f"publish:{product_id}"))
+    # Раздел 4.1 ТЗ v5: «Выложить» ведёт на экран выбора магазинов (если их
+    # больше одного на платформу), а не сразу публикует — см. new_product.confirm_publish.
+    builder.row(_btn("🚀 Выложить", f"publish:{product_id}"))
     builder.row(
         _btn("📈 Выдача", f"seo:{product_id}"),
         _btn("💰 Цена", f"pricecheck:{product_id}"),
@@ -65,7 +67,7 @@ def product_detail_kb(product_id: int) -> InlineKeyboardMarkup:
     """Карточка товара после «Открыть» — раздел D2 ТЗ: короткое превью + весь
     набор действий по конкретному товару в одном месте."""
     builder = InlineKeyboardBuilder()
-    builder.row(_btn("✅ Опубликовать", f"publish:{product_id}"))
+    builder.row(_btn("🚀 Выложить", f"publish:{product_id}"))
     builder.row(_btn("🧬 Клон", f"clone:{product_id}"), _btn("📦 Пакет на модели", f"clonebatch:{product_id}"))
     builder.row(_btn("✏️ Править", f"edit:{product_id}"), _btn("🎨 Инфографика", f"gengraphic:{product_id}"))
     builder.row(_btn("📈 Выдача", f"seo:{product_id}"), _btn("🔍 Конкуренты", f"competitors:{product_id}"))
@@ -115,6 +117,36 @@ def drafts_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
     for product_id in product_ids:
         builder.button(text=f"▶️ Продолжить #{product_id}", callback_data=f"continuedraft:{product_id}")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def shop_picker_kb(product_id: int, wb_shops, ozon_shops, selected_ids) -> InlineKeyboardMarkup:
+    """Экран «Куда выложить?» — раздел 4.2 ТЗ v5. Переключатели (☑/☐) на
+    каждый магазин, плюс «Все WB»/«Все Ozon» и «Дальше»."""
+    builder = InlineKeyboardBuilder()
+    for shop in wb_shops:
+        mark = "☑" if shop.id in selected_ids else "☐"
+        builder.row(_btn(f"{mark} {shop.name}", f"shoppick:{product_id}:{shop.id}"))
+    for shop in ozon_shops:
+        mark = "☑" if shop.id in selected_ids else "☐"
+        builder.row(_btn(f"{mark} {shop.name}", f"shoppick:{product_id}:{shop.id}"))
+
+    toggle_row = []
+    if len(wb_shops) > 1:
+        toggle_row.append(_btn("Все Wildberries", f"shoppickall:{product_id}:wb"))
+    if len(ozon_shops) > 1:
+        toggle_row.append(_btn("Все Ozon", f"shoppickall:{product_id}:ozon"))
+    if toggle_row:
+        builder.row(*toggle_row)
+
+    builder.row(_btn("Дальше", f"shopgo:{product_id}"))
+    return builder.as_markup()
+
+
+def shop_confirm_kb(product_id: int) -> InlineKeyboardMarkup:
+    """Подтверждение перед публикацией — раздел 4.3 ТЗ v5."""
+    builder = InlineKeyboardBuilder()
+    builder.row(_btn("Выкладывать", f"shopconfirm:{product_id}"), _btn("Назад", f"shopback:{product_id}"))
     return builder.as_markup()
 
 

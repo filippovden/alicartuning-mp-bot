@@ -11,9 +11,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import category_match_kb, confirm_publish_kb, main_menu_kb, photos_done_kb, retry_ai_kb, skip_kb
-from app.bot.states import NewProductStates
+from app.bot.keyboards import (
+    category_match_kb,
+    confirm_publish_kb,
+    main_menu_kb,
+    photos_done_kb,
+    retry_ai_kb,
+    shop_confirm_kb,
+    shop_picker_kb,
+    skip_kb,
+)
+from app.bot.states import NewProductStates, ShopPickStates
 from app.config import settings
+from app.db.models import ListingStatus, Marketplace
 from app.services.category_search import (
     ozon_cache_is_empty,
     search_ozon_categories,
@@ -549,23 +559,166 @@ async def generate_graphic(callback: CallbackQuery, product_service) -> None:
 
 @router.callback_query(F.data.startswith("publish:"))
 async def confirm_publish(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    """«🚀 Выложить» — раздел 4.1-4.2 ТЗ v5. Если магазинов больше одного на
+    платформу — сначала экран «Куда выложить?» (ShopPickStates.picking), а
+    сама публикация начинается только после подтверждения (shopconfirm:).
+    Если в системе ровно один WB и один Ozon (или меньше) — экран не нужен,
+    поведение как раньше: публикуем сразу в магазин(ы) по умолчанию."""
+    from app.services import shops as shops_service
+
     product_id = int(callback.data.split(":")[1])
     await callback.answer()
-    await callback.message.answer(texts.PUBLISHING)
 
     validation = await product_service.validate(product_id)
     if not validation.is_valid:
         await callback.message.answer(texts.validation_errors(validation.as_text()))
         return
 
-    try:
-        summary = await product_service.publish(product_id)
-    except ValueError as exc:
-        await callback.message.answer(f"⚠️ {exc}")
+    wb_shops = shops_service.list_shops(platform=Marketplace.WB)
+    ozon_shops = shops_service.list_shops(platform=Marketplace.OZON)
+
+    if len(wb_shops) <= 1 and len(ozon_shops) <= 1:
+        await callback.message.answer(texts.PUBLISHING)
+        try:
+            summary = await product_service.publish(product_id)
+        except ValueError as exc:
+            await callback.message.answer(f"⚠️ {exc}")
+            return
+        await callback.message.answer(texts.publish_result(summary.wb, summary.ozon))
+        await state.clear()
         return
 
-    await callback.message.answer(texts.publish_result(summary.wb, summary.ozon))
+    await state.update_data(shoppick_product_id=product_id, shoppick_selected=[])
+    await state.set_state(ShopPickStates.picking)
+    await callback.message.answer(
+        texts.SHOP_PICK_INTRO, reply_markup=shop_picker_kb(product_id, wb_shops, ozon_shops, set())
+    )
+
+
+@router.callback_query(F.data.startswith("shoppick:"), ShopPickStates.picking)
+async def shop_pick_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    from app.services import shops as shops_service
+
+    _, product_id_raw, shop_id = callback.data.split(":")
+    product_id = int(product_id_raw)
+    await callback.answer()
+
+    data = await state.get_data()
+    selected = set(data.get("shoppick_selected", []))
+    if shop_id in selected:
+        selected.discard(shop_id)
+    else:
+        selected.add(shop_id)
+    await state.update_data(shoppick_selected=list(selected))
+
+    wb_shops = shops_service.list_shops(platform=Marketplace.WB)
+    ozon_shops = shops_service.list_shops(platform=Marketplace.OZON)
+    await callback.message.edit_reply_markup(reply_markup=shop_picker_kb(product_id, wb_shops, ozon_shops, selected))
+
+
+@router.callback_query(F.data.startswith("shoppickall:"), ShopPickStates.picking)
+async def shop_pick_all(callback: CallbackQuery, state: FSMContext) -> None:
+    from app.services import shops as shops_service
+
+    _, product_id_raw, platform_raw = callback.data.split(":")
+    product_id = int(product_id_raw)
+    await callback.answer()
+
+    platform = Marketplace.WB if platform_raw == "wb" else Marketplace.OZON
+    wb_shops = shops_service.list_shops(platform=Marketplace.WB)
+    ozon_shops = shops_service.list_shops(platform=Marketplace.OZON)
+    platform_shops = wb_shops if platform == Marketplace.WB else ozon_shops
+
+    data = await state.get_data()
+    selected = set(data.get("shoppick_selected", []))
+    selected.update(s.id for s in platform_shops)
+    await state.update_data(shoppick_selected=list(selected))
+
+    await callback.message.edit_reply_markup(reply_markup=shop_picker_kb(product_id, wb_shops, ozon_shops, selected))
+
+
+@router.callback_query(F.data.startswith("shopgo:"), ShopPickStates.picking)
+async def shop_pick_go(callback: CallbackQuery, state: FSMContext) -> None:
+    from app.services import shops as shops_service
+
+    product_id = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    selected = data.get("shoppick_selected", [])
+    if not selected:
+        await callback.answer(texts.NEED_AT_LEAST_ONE_SHOP, show_alert=True)
+        return
+    await callback.answer()
+
+    shop_objs = [s for s in (shops_service.get_shop(sid) for sid in selected) if s is not None]
+    await state.set_state(ShopPickStates.confirming)
+    await callback.message.answer(
+        texts.shop_confirm_screen([s.name for s in shop_objs]), reply_markup=shop_confirm_kb(product_id)
+    )
+
+
+@router.callback_query(F.data.startswith("shopback:"), ShopPickStates.confirming)
+async def shop_pick_back(callback: CallbackQuery, state: FSMContext) -> None:
+    from app.services import shops as shops_service
+
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+
+    data = await state.get_data()
+    selected = set(data.get("shoppick_selected", []))
+    await state.set_state(ShopPickStates.picking)
+
+    wb_shops = shops_service.list_shops(platform=Marketplace.WB)
+    ozon_shops = shops_service.list_shops(platform=Marketplace.OZON)
+    await callback.message.answer(
+        texts.SHOP_PICK_INTRO, reply_markup=shop_picker_kb(product_id, wb_shops, ozon_shops, selected)
+    )
+
+
+@router.callback_query(F.data.startswith("shopconfirm:"), ShopPickStates.confirming)
+async def shop_confirm_publish(callback: CallbackQuery, state: FSMContext, product_service) -> None:
+    """Публикует по очереди в каждый выбранный магазин (раздел 4.4 ТЗ v5) —
+    не параллельно, чтобы ошибка одного магазина не мешала диагностировать
+    остальные, и чтобы каждый шаг был виден отдельной строкой в чате."""
+    from app.services import shops as shops_service
+
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+
+    data = await state.get_data()
+    selected = data.get("shoppick_selected", [])
     await state.clear()
+
+    lines: list[str] = []
+    for shop_id in selected:
+        shop = shops_service.get_shop(shop_id)
+        if shop is None:
+            continue
+
+        existing = await product_service.get_listing(product_id, shop_id)
+        already_live = existing is not None and (existing.wb_nm_id or existing.ozon_product_id)
+        if already_live:
+            lines.append(texts.shop_publish_line(shop.name, "уже выложено"))
+            continue
+
+        try:
+            listing = await product_service.publish_to_shop(product_id, shop_id)
+        except ValueError as exc:
+            lines.append(texts.shop_publish_line(shop.name, f"не выложилось — {exc}"))
+            continue
+
+        listing_id = listing.wb_nm_id or listing.ozon_product_id
+        if listing.status == ListingStatus.PUBLISHED and listing_id:
+            lines.append(texts.shop_publish_line(shop.name, f"готово, номер {listing_id}"))
+        elif listing.status == ListingStatus.PARTIAL:
+            lines.append(texts.shop_publish_line(shop.name, listing.publish_message or "карточка есть, фото не ушли"))
+        else:
+            lines.append(texts.shop_publish_line(shop.name, f"не выложилось — {listing.publish_message or 'ошибка'}"))
+
+    if not lines:
+        await callback.message.answer(texts.NEED_AT_LEAST_ONE_SHOP)
+        return
+
+    await callback.message.answer("\n".join(f"• {line}" for line in lines))
 
 
 async def _publish_one(product_service, product_id: int) -> tuple[bool, str]:

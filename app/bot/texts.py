@@ -127,6 +127,54 @@ def validation_errors(text: str) -> str:
     return f"⚠️ Карточку нельзя опубликовать, пока не исправлены проблемы:\n\n{text}"
 
 
+# --- Мультимагазинность (срез v5, раздел 4 ТЗ) --------------------------------
+
+SHOP_PICK_INTRO = (
+    "Куда выложить эту деталь?\n\n"
+    "Можно один магазин Wildberries и один Ozon — или сразу несколько.\n"
+    "На каждый магазин уйдёт своя карточка: другое название и другая картинка с текстом."
+)
+
+NEED_AT_LEAST_ONE_SHOP = "Отметь хотя бы один магазин."
+
+
+def shop_confirm_screen(shop_names: list[str]) -> str:
+    lines = ["Выкладываю:"]
+    lines += [f"• {html.escape(name)} — своя карточка" for name in shop_names]
+    lines.append("")
+    lines.append("Это займёт минуту. Не нажимай ничего.")
+    return "\n".join(lines)
+
+
+def shop_publish_line(shop_name: str, note: str) -> str:
+    return f"{html.escape(shop_name)} — {html.escape(note)}"
+
+
+def shop_listings_summary(listings) -> str | None:
+    """«Магазины:» блок в карточке товара (раздел 4.5 ТЗ v5) — статус по
+    каждому магазину, куда уже пробовали выложить."""
+    from app.services import shops as shops_service
+
+    if not listings:
+        return None
+
+    lines = ["Магазины:"]
+    for listing in listings:
+        shop = shops_service.get_shop(listing.shop_id)
+        name = shop.name if shop else listing.shop_id
+        listing_id = listing.wb_nm_id or listing.ozon_product_id
+        if listing.status.value == "published" and listing_id:
+            note = f"стоит, номер {listing_id}"
+        elif listing.status.value == "partial":
+            note = listing.publish_message or "карточка есть, фото не ушли"
+        elif listing.status.value == "error":
+            note = "нет"
+        else:
+            note = "черновик"
+        lines.append(f"• {html.escape(name)} — {html.escape(note)}")
+    return "\n".join(lines)
+
+
 def publish_result(wb_log, ozon_log) -> str:
     """Единый экран после публикации (раздел 4.2 ТЗ v3): заголовок отражает
     реальный исход — SUCCESS с фото не то же самое, что карточка без фото

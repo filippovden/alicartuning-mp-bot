@@ -54,3 +54,10 @@ class CloneBatchStates(StatesGroup):
 
 class ReviewReplyStates(StatesGroup):
     entering_reply = State()
+
+
+class ShopPickStates(StatesGroup):
+    """Экран «Куда выложить?» — выбор магазинов перед публикацией (раздел 4.2 ТЗ v5)."""
+
+    picking = State()
+    confirming = State()

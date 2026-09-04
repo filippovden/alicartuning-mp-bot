@@ -19,11 +19,13 @@ from app.db.models import (
     CategoryAttr,
     Image,
     ImageType,
+    ListingStatus,
     Marketplace,
     Product,
     PublishLog,
     PublishStatus,
     ProductStatus,
+    ShopListing,
     User,
 )
 from app.services.ai.client import AIContentService, ProductDraft
@@ -44,6 +46,9 @@ PRODUCT_LOAD_OPTIONS = (
     # синхронно — без eager load это ленивая подгрузка вне await-контекста
     # (MissingGreenlet) на async-сессии, а не просто "None по умолчанию".
     selectinload(Product.publish_logs),
+    # «Мои товары»/детали товара показывают статус по каждому магазину
+    # (раздел 4.5 ТЗ v5) — та же причина eager load, что и у publish_logs выше.
+    selectinload(Product.shop_listings),
 )
 
 
@@ -550,7 +555,123 @@ class ProductService:
         await self.session.commit()
         return summary
 
-    async def _publish_to_wb(self, product: Product) -> PublishLog:
+    # --- Мультимагазинность (срез v5) --------------------------------------
+
+    async def get_listing(self, product_id: int, shop_id: str) -> ShopListing | None:
+        stmt = select(ShopListing).where(ShopListing.product_id == product_id, ShopListing.shop_id == shop_id)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def list_listings(self, product_id: int) -> list[ShopListing]:
+        stmt = select(ShopListing).where(ShopListing.product_id == product_id)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def _next_variant_index(self, product_id: int) -> int:
+        from app.services.listing_variation import VARIANT_COUNT
+
+        count = len(await self.list_listings(product_id))
+        return count % VARIANT_COUNT
+
+    async def _get_or_create_listing(self, product: Product, shop) -> ShopListing:
+        """Карточка listing под конкретный магазин — если уже создавалась
+        раньше (например, publish_to_shop вызван повторно), переиспользуем
+        её как есть (не перегенерируем текст/артикул заново — раздел 4.5 ТЗ:
+        повторная публикация не должна тихо плодить новые артикулы)."""
+        from app.services.listing_variation import build_listing_variation
+
+        existing = await self.get_listing(product.id, shop.id)
+        if existing is not None:
+            return existing
+
+        variant_index = await self._next_variant_index(product.id)
+        variation = await build_listing_variation(product, shop, variant_index, self.session, self.ai_service)
+
+        listing = ShopListing(
+            product_id=product.id,
+            shop_id=shop.id,
+            platform=shop.platform,
+            title=variation.title,
+            description=variation.description,
+            bullets=variation.bullets,
+            vendor_code=variation.vendor_code,
+            status=ListingStatus.DRAFT,
+        )
+        self.session.add(listing)
+        await self.session.commit()
+        await self.session.refresh(listing)
+        return listing
+
+    async def publish_to_shop(self, product_id: int, shop_id: str):
+        """Публикует основу товара в ОДИН конкретный магазин под своим
+        listing (текст/артикул/клиент этого магазина) — раздел 2, 4.4 ТЗ v5.
+        Собирает/переиспользует ShopListing, вызывает уже существующие
+        _publish_to_wb/_publish_to_ozon с этим listing и клиентом этого
+        магазина (см. app/services/shops.py: client_for)."""
+        from app.services import shops as shops_service
+
+        product = await self.get_product(product_id)
+        if product is None:
+            raise ValueError(f"Товар {product_id} не найден")
+
+        shop = shops_service.get_shop(shop_id)
+        if shop is None:
+            raise ValueError(f"Магазин {shop_id} не найден")
+
+        validation = await validate_product(product, product.attributes, product.images, self.session)
+        if not validation.is_valid:
+            raise ValueError(f"Карточка не прошла валидацию:\n{validation.as_text()}")
+
+        listing = await self._get_or_create_listing(product, shop)
+
+        # Раздел 4.5 ТЗ v5: повторный вызов на тот же shop_id не должен молча
+        # публиковать ещё раз (второй nmID/задача импорта) — карточка там уже есть.
+        already_published = (listing.wb_nm_id if shop.platform == Marketplace.WB else listing.ozon_product_id) is not None
+        if already_published:
+            return listing
+
+        if shop.platform == Marketplace.WB and not (product.category and product.category.wb_subject_id):
+            listing.status = ListingStatus.ERROR
+            listing.publish_message = "у категории товара не настроен раздел Wildberries — донастройте в /admin."
+            await self.session.commit()
+            return listing
+        if shop.platform == Marketplace.OZON and not (product.category and product.category.ozon_category_id):
+            listing.status = ListingStatus.ERROR
+            listing.publish_message = "у категории товара не настроен раздел Ozon — донастройте в /admin."
+            await self.session.commit()
+            return listing
+
+        client = shops_service.client_for(shop)
+        if shop.platform == Marketplace.WB:
+            log = await self._publish_to_wb(product, listing=listing, client=client)
+        else:
+            log = await self._publish_to_ozon(product, listing=listing, client=client)
+
+        listing.status = {
+            PublishStatus.SUCCESS: ListingStatus.PUBLISHED,
+            PublishStatus.PARTIAL: ListingStatus.PARTIAL,
+            PublishStatus.ERROR: ListingStatus.ERROR,
+        }[log.status]
+        listing.publish_message = log.message
+        await self.session.commit()
+        await self.session.refresh(listing)
+
+        # Обратная совместимость (раздел 2 ТЗ v5): магазин по умолчанию
+        # дублирует nmID/ozon_product_id в старые колонки product.* — их
+        # читают /list, /status и остальной код, написанный до v5.
+        if shop.id in shops_service.DEFAULT_SHOP_IDS:
+            if shop.platform == Marketplace.WB:
+                product.wb_nm_id = listing.wb_nm_id
+            else:
+                product.ozon_product_id = listing.ozon_product_id
+            await self.session.commit()
+
+        return listing
+
+    async def _publish_to_wb(
+        self,
+        product: Product,
+        listing: ShopListing | None = None,
+        client: WildberriesClient | None = None,
+    ) -> PublishLog:
         """Публикация в WB — двухшаговая (раздел 7 ТЗ, Content API):
 
         1. POST /cards/upload создаёт карточку АСИНХРОННО и не возвращает реальный
@@ -558,10 +679,21 @@ class ProductService:
            позже и его нужно опрашивать через /get/cards/list (см. _wait_for_wb_nm_id).
         2. Фото грузятся ТОЛЬКО после того, как nmID подтверждён — WB привязывает
            фото к карточке по nmID, а не по vendorCode.
-        """
-        client = WildberriesClient()
+
+        listing/client — раздел 6 ТЗ v5: если передан ShopListing (публикация под
+        конкретный магазин), в WB уходят название/описание/артикул ЭТОГО listing
+        через переданного клиента (ключи этого магазина), а не общий текст основы
+        товара через клиент из settings. Без них поведение не меняется — прежняя
+        публикация «в магазин по умолчанию» (см. publish())."""
+        client = client or WildberriesClient()
+        vendor_code = listing.vendor_code if listing is not None else product.vendor_code
+        title = listing.title if listing is not None else product.title
+        description = listing.description if listing is not None else product.description
+
         try:
-            variant = build_wb_variant(product, product.attributes)
+            variant = build_wb_variant(
+                product, product.attributes, vendor_code=vendor_code, title=title, description=description
+            )
             await client.create_card(product.category.wb_subject_id, [variant])
         except MarketplaceAPIError as exc:
             return await self._save_publish_log(
@@ -573,7 +705,7 @@ class ProductService:
             )
 
         try:
-            nm_id = await self._wait_for_wb_nm_id(client, product.vendor_code)
+            nm_id = await self._wait_for_wb_nm_id(client, vendor_code)
         except MarketplaceAPIError as exc:
             return await self._save_publish_log(
                 product,
@@ -591,7 +723,10 @@ class ProductService:
                 message="карточка отправлена, ID ещё не пришёл. Проверь кабинет WB через пару минут.",
             )
 
-        product.wb_nm_id = str(nm_id)
+        if listing is not None:
+            listing.wb_nm_id = str(nm_id)
+        else:
+            product.wb_nm_id = str(nm_id)
 
         # Только товарные фото (MAIN) — инфографика/лайфстайл-кадры не должны
         # затирать или разбавлять основные фото карточки на WB (раздел 3 ТЗ v3).
@@ -706,7 +841,14 @@ class ProductService:
         await self.session.commit()
         return log
 
-    async def _publish_to_ozon(self, product: Product) -> PublishLog:
+    async def _publish_to_ozon(
+        self,
+        product: Product,
+        listing: ShopListing | None = None,
+        client: OzonClient | None = None,
+    ) -> PublishLog:
+        """listing/client — см. _publish_to_wb: текст и ключи конкретного
+        магазина, если публикация идёт под него (раздел 6 ТЗ v5)."""
         # Ozon требует category_id и type_id ВМЕСТЕ (см. build_ozon_item — двухуровневая
         # категоризация). Сюда попадаем только когда ozon_category_id уже задан (см.
         # publish()), поэтому проверяем именно отсутствие пары — type_id. Без этой
@@ -724,11 +866,20 @@ class ProductService:
                 ),
             )
 
-        client = OzonClient()
+        vendor_code = listing.vendor_code if listing is not None else product.vendor_code
+        title = listing.title if listing is not None else product.title
+        description = listing.description if listing is not None else product.description
+
+        client = client or OzonClient()
         try:
-            item = build_ozon_item(product, product.attributes)
+            item = build_ozon_item(
+                product, product.attributes, vendor_code=vendor_code, title=title, description=description
+            )
             result = await client.import_products([item])
-            product.ozon_product_id = result.external_id
+            if listing is not None:
+                listing.ozon_product_id = result.external_id
+            else:
+                product.ozon_product_id = result.external_id
             log = PublishLog(
                 product_id=product.id,
                 marketplace=Marketplace.OZON,

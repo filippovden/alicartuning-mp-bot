@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     wb_stats_api_base_url: str = "https://statistics-api.wildberries.ru"
     wb_feedbacks_api_base_url: str = "https://feedbacks-api.wildberries.ru"
 
+    # Несколько магазинов (раздел 1 ТЗ v5) — до 4 кабинетов WB + до 4 Ozon.
+    # JSON-массив {"id","name","platform":"wb"|"ozon","api_key","client_id"}.
+    # Пусто = используются одиночные wb_api_key/ozon_client_id/ozon_api_key
+    # ниже как «магазин по умолчанию» — старый .env не ломается.
+    # См. app/services/shops.py. Не путать с ShopSnapshot (снимки ЧУЖИХ
+    # магазинов-конкурентов на WB через /shop) — это про СВОИ кабинеты.
+    shops_json: str = ""
+
     # Ozon
     ozon_client_id: str = ""
     ozon_api_key: str = ""

@@ -63,6 +63,15 @@ class PublishStatus(str, enum.Enum):
     ERROR = "error"
 
 
+class ListingStatus(str, enum.Enum):
+    """Статус карточки под конкретный магазин (см. ShopListing) — раздел 2 ТЗ v5."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    PARTIAL = "partial"
+    ERROR = "error"
+
+
 # --- USERS ---------------------------------------------------------------
 
 
@@ -165,6 +174,7 @@ class Product(Base):
     images: Mapped[list["Image"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     attributes: Mapped[list["Attribute"]] = relationship(back_populates="product", cascade="all, delete-orphan")
     publish_logs: Mapped[list["PublishLog"]] = relationship(back_populates="product", cascade="all, delete-orphan")
+    shop_listings: Mapped[list["ShopListing"]] = relationship(back_populates="product", cascade="all, delete-orphan")
 
 
 class Variant(Base):
@@ -223,10 +233,15 @@ class Image(Base):
     storage_file_id: Mapped[int] = mapped_column(ForeignKey("storage_files.id"))
     image_type: Mapped[ImageType] = mapped_column(Enum(ImageType, values_callable=_enum_values), default=ImageType.MAIN)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    # NULL — общее фото основы товара (то, что грузит продавец, MAIN-кадры).
+    # Заполнено — инфографика конкретного listing (раздел 3.4 ТЗ v5): каждому
+    # магазину свой кадр текста поверх тех же фактов, а не копия соседнего.
+    listing_id: Mapped[int | None] = mapped_column(ForeignKey("shop_listings.id", ondelete="CASCADE"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     product: Mapped["Product"] = relationship(back_populates="images")
     storage_file: Mapped["StorageFile"] = relationship(back_populates="images")
+    listing: Mapped["ShopListing | None"] = relationship(back_populates="images")
 
 
 # --- PUBLISH LOGS -------------------------------------------------------------
@@ -245,6 +260,44 @@ class PublishLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     product: Mapped["Product"] = relationship(back_populates="publish_logs")
+
+
+# --- SHOP LISTINGS (мультимагазинность, срез v5) -------------------------------
+# Один Product (факты: фото MAIN, материал, цвет, модель, цена) может уйти в
+# несколько СВОИХ кабинетов (магазинов) WB/Ozon сразу — с РАЗНЫМ текстом и
+# артикулом на каждый, чтобы площадка не видела дубль карточки. shop_id — не
+# FK на таблицу (список магазинов в этом срезе не хранится в БД, см.
+# app/services/shops.py: SHOPS_JSON), просто стабильный slug из настроек.
+# Не путать с ShopSnapshot выше — тот про ЧУЖИЕ магазины-конкуренты (/shop).
+
+
+class ShopListing(Base):
+    __tablename__ = "shop_listings"
+    __table_args__ = (UniqueConstraint("shop_id", "vendor_code", name="uq_shop_listing_vendor_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    shop_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    platform: Mapped[Marketplace] = mapped_column(Enum(Marketplace, values_callable=_enum_values), nullable=False)
+
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bullets: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    vendor_code: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    wb_nm_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ozon_product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    status: Mapped[ListingStatus] = mapped_column(Enum(ListingStatus, values_callable=_enum_values), default=ListingStatus.DRAFT)
+    publish_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    product: Mapped["Product"] = relationship(back_populates="shop_listings")
+    images: Mapped[list["Image"]] = relationship(back_populates="listing", cascade="all, delete-orphan")
 
 
 # --- BOT DIALOGS ---------------------------------------------------------------

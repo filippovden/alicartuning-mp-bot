@@ -8,8 +8,21 @@ from app.config import settings
 from app.db.models import Attribute, CategoryAttr, Marketplace, Product
 
 
-def build_wb_variant(product: Product, attributes: list[Attribute]) -> dict[str, Any]:
-    """Формирует объект variants[] для POST /content/v2/cards/upload."""
+def build_wb_variant(
+    product: Product,
+    attributes: list[Attribute],
+    *,
+    vendor_code: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Формирует объект variants[] для POST /content/v2/cards/upload.
+
+    vendor_code/title/description — раздел 6 ТЗ v5: когда публикация идёт под
+    конкретный магазин (ShopListing), карточка на площадке должна нести текст
+    ЭТОГО listing, а не общий текст основы товара — иначе несколько кабинетов
+    получат побайтово одинаковую карточку. Без этих аргументов (обычная
+    публикация без выбора магазина) поведение не меняется — берутся поля product."""
     characteristics = [
         {"id": int(attr.category_attr.external_attr_id), "value": _wb_value(attr.value)}
         for attr in attributes
@@ -17,9 +30,9 @@ def build_wb_variant(product: Product, attributes: list[Attribute]) -> dict[str,
     ]
 
     variant: dict[str, Any] = {
-        "vendorCode": product.vendor_code,
-        "title": product.title,
-        "description": product.description or "",
+        "vendorCode": vendor_code if vendor_code is not None else product.vendor_code,
+        "title": title if title is not None else product.title,
+        "description": (description if description is not None else product.description) or "",
         "brand": product.brand,
         "characteristics": characteristics,
         "sizes": [
@@ -46,7 +59,15 @@ def _wb_tech_size(attributes: list[Attribute]) -> str:
     return "0"
 
 
-def build_ozon_item(product: Product, attributes: list[Attribute], vat: str | None = None) -> dict[str, Any]:
+def build_ozon_item(
+    product: Product,
+    attributes: list[Attribute],
+    vat: str | None = None,
+    *,
+    vendor_code: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
     """Формирует объект items[] для POST /v2/product/import.
 
     category_id и type_id обязательны вместе — Ozon с 2022+ использует двухуровневую
@@ -54,6 +75,10 @@ def build_ozon_item(product: Product, attributes: list[Attribute], vat: str | No
     дерева, type_id — конкретный тип товара внутри него; без type_id запрос будет
     отклонён API. vat обязателен для каждого товара (раздел 10 ТЗ — «Ошибки и лимиты»);
     по умолчанию берётся из настроек (OZON_DEFAULT_VAT), можно переопределить точечно.
+
+    vendor_code/title/description — раздел 6 ТЗ v5, см. build_wb_variant: текст
+    конкретного ShopListing вместо общего текста основы товара, когда публикация
+    идёт под конкретный магазин.
     """
     attrs = [
         {"attribute_id": int(attr.category_attr.external_attr_id), "values": [{"value": attr.value}]}
@@ -62,9 +87,9 @@ def build_ozon_item(product: Product, attributes: list[Attribute], vat: str | No
     ]
 
     item: dict[str, Any] = {
-        "offer_id": product.vendor_code,
-        "name": product.title,
-        "description": product.description or "",
+        "offer_id": vendor_code if vendor_code is not None else product.vendor_code,
+        "name": title if title is not None else product.title,
+        "description": (description if description is not None else product.description) or "",
         "price": str(int(product.price)) if product.price else "0",
         "currency_code": "RUB",
         "vat": vat if vat is not None else settings.ozon_default_vat,

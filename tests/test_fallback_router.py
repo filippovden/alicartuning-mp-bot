@@ -48,3 +48,21 @@ async def test_unhandled_callback_gives_clear_answer_instead_of_silence():
 
     assert callback.answer_called is True
     assert callback.message.answered == [texts.STALE_BUTTON]
+
+
+@pytest.mark.parametrize(
+    "data",
+    ["shoppick:1:wb-salon", "shoppickall:1:wb", "shopgo:1", "shopconfirm:1", "shopback:1"],
+)
+@pytest.mark.asyncio
+async def test_shop_pick_callbacks_outside_state_give_clear_answer(data: str):
+    """Раздел 4.2 ТЗ v5: устаревшая кнопка экрана выбора магазинов (например,
+    после /cancel) должна ответить текстом, а не быть молча проигнорирована —
+    эти callback-и зарегистрированы только внутри ShopPickStates, поэтому вне
+    состояния их ловит только общий catch-all в самом конце (см. main.py)."""
+    callback = _FakeCallback(data)
+
+    await common.unhandled_callback(callback)
+
+    assert callback.answer_called is True
+    assert callback.message.answered == [texts.STALE_BUTTON]

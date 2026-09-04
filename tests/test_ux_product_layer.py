@@ -147,7 +147,7 @@ def test_confirm_publish_kb_has_no_overloaded_buttons():
     all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
     assert "🖼 Обработать фото (убрать фон)" not in all_texts
     assert "🔍 Анализ конкурентов" not in all_texts
-    assert any("Опубликовать" in t for t in all_texts)
+    assert any("Выложить" in t for t in all_texts)  # раздел 4.1 ТЗ v5: «✅ Опубликовать» → «🚀 Выложить»
     # 5 рядов: публикация / выдача+цена / инфографика+другие модели / править / отмена
     # (раздел 3.1 ТЗ v4 — добавлена «📈 Выдача» в пару с «💰 Цена»)
     assert len(kb.inline_keyboard) == 5
@@ -158,7 +158,7 @@ def test_product_detail_kb_keeps_secondary_actions():
     all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
     assert any("Фото" in t for t in all_texts)
     assert any("Конкуренты" in t for t in all_texts)
-    assert any("Опубликовать" in t for t in all_texts)
+    assert any("Выложить" in t for t in all_texts)  # раздел 4.1 ТЗ v5: «✅ Опубликовать» → «🚀 Выложить»
     assert any("Клон" in t for t in all_texts)
 
 
