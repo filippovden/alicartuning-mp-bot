@@ -116,6 +116,8 @@ def poll_reviews_task() -> dict:
     import asyncio
 
     from aiogram import Bot
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.enums import ParseMode
 
     from app.config import settings
     from app.db.models import ReviewSentiment
@@ -137,7 +139,7 @@ def poll_reviews_task() -> dict:
 
         negative = [r for r in new_reviews if r.sentiment == ReviewSentiment.NEGATIVE and not r.is_answered]
         if negative and settings.telegram_bot_token and settings.telegram_admin_id_list:
-            bot = Bot(token=settings.telegram_bot_token)
+            bot = Bot(token=settings.telegram_bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             text = f"⚠️ Новых негативных отзывов: {len(negative)}. Проверьте /reviews в боте."
             for admin_id in settings.telegram_admin_id_list:
                 try:
@@ -159,10 +161,17 @@ def snapshot_competitor_prices_task() -> dict:
     После снимков проактивно проверяет тренд по свежеснятым товарам и, если хотя
     бы по одному тренд уже значимый (см. TREND_SIGNIFICANT_PCT), шлёт админам
     один дайджест — раньше тренд можно было увидеть только вручную через
-    /analytics <ID>, и никто не узнавал о нём, пока сам не спросит."""
+    /analytics <ID>, и никто не узнавал о нём, пока сам не спросит.
+
+    Тем же прогоном (не отдельным beat, раздел 4 ТЗ v4) считает короткий
+    SEO-дайджест по опубликованным товарам — см. seo_coach.build_daily_seo_digest:
+    попадают только карточки, где реально есть что поправить (цена/название),
+    остальное не спамит."""
     import asyncio
 
     from aiogram import Bot
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.enums import ParseMode
     from sqlalchemy import select
 
     from app.config import settings
@@ -173,6 +182,7 @@ def snapshot_competitor_prices_task() -> dict:
         format_trend_digest,
         snapshot_competitor_prices,
     )
+    from app.services.seo_coach import build_daily_seo_digest, format_seo_digest
 
     async def _run() -> dict:
         async with async_session_factory() as session:
@@ -186,19 +196,32 @@ def snapshot_competitor_prices_task() -> dict:
                     snapshotted.append(product)
 
             alerts = await check_significant_price_trends(session, snapshotted)
-            if alerts and settings.telegram_bot_token and settings.telegram_admin_id_list:
-                bot = Bot(token=settings.telegram_bot_token)
-                text = format_trend_digest(alerts)
+            seo_digest_lines = await build_daily_seo_digest(products)
+
+            messages = []
+            if alerts:
+                messages.append(format_trend_digest(alerts))
+            if seo_digest_lines:
+                messages.append(format_seo_digest(seo_digest_lines))
+
+            if messages and settings.telegram_bot_token and settings.telegram_admin_id_list:
+                bot = Bot(token=settings.telegram_bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
                 for admin_id in settings.telegram_admin_id_list:
-                    try:
-                        await bot.send_message(admin_id, text)
-                    except Exception:
-                        logging.getLogger(__name__).warning(
-                            "Не удалось отправить дайджест трендов админу %s", admin_id, exc_info=True
-                        )
+                    for text in messages:
+                        try:
+                            await bot.send_message(admin_id, text)
+                        except Exception:
+                            logging.getLogger(__name__).warning(
+                                "Не удалось отправить дайджест админу %s", admin_id, exc_info=True
+                            )
                 await bot.session.close()
 
-            return {"products_checked": len(products), "snapshots_taken": len(snapshotted), "trend_alerts": len(alerts)}
+            return {
+                "products_checked": len(products),
+                "snapshots_taken": len(snapshotted),
+                "trend_alerts": len(alerts),
+                "seo_digest_items": len(seo_digest_lines),
+            }
 
     return asyncio.run(_run())
 
@@ -245,6 +268,8 @@ def check_wb_card_status_task() -> dict:
     import asyncio
 
     from aiogram import Bot
+    from aiogram.client.default import DefaultBotProperties
+    from aiogram.enums import ParseMode
     from sqlalchemy import select
 
     from app.config import settings
@@ -265,7 +290,7 @@ def check_wb_card_status_task() -> dict:
                     notices.append(notice)
 
             if notices and settings.telegram_bot_token and settings.telegram_admin_id_list:
-                bot = Bot(token=settings.telegram_bot_token)
+                bot = Bot(token=settings.telegram_bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
                 text = "🔎 <b>Статус карточек WB изменился:</b>\n" + "\n".join(f"• {n}" for n in notices)
                 for admin_id in settings.telegram_admin_id_list:
                     try:

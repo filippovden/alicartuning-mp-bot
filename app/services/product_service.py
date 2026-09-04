@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass
 
@@ -793,10 +794,11 @@ class ProductService:
         if last is not None and now_visible == was_visible:
             return None
 
+        safe_vendor_code = html.escape(product.vendor_code)
         message = (
-            f"Модерация WB: карточка {product.vendor_code} видна в каталоге"
+            f"Модерация WB: карточка {safe_vendor_code} видна в каталоге"
             if now_visible
-            else f"Модерация WB: карточка {product.vendor_code} пока не видна в каталоге "
+            else f"Модерация WB: карточка {safe_vendor_code} пока не видна в каталоге "
             "(фото не подтянулись или карточка ещё на проверке)"
         )
         await self._save_publish_log(

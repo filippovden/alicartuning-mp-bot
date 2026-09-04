@@ -148,8 +148,9 @@ def test_confirm_publish_kb_has_no_overloaded_buttons():
     assert "🖼 Обработать фото (убрать фон)" not in all_texts
     assert "🔍 Анализ конкурентов" not in all_texts
     assert any("Опубликовать" in t for t in all_texts)
-    # 4 ряда: публикация / инфографика+цена / клон+править / отмена
-    assert len(kb.inline_keyboard) == 4
+    # 5 рядов: публикация / выдача+цена / инфографика+другие модели / править / отмена
+    # (раздел 3.1 ТЗ v4 — добавлена «📈 Выдача» в пару с «💰 Цена»)
+    assert len(kb.inline_keyboard) == 5
 
 
 def test_product_detail_kb_keeps_secondary_actions():

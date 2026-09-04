@@ -39,13 +39,14 @@ def confirm_publish_kb(product_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(_btn("✅ Опубликовать на WB и Ozon", f"publish:{product_id}"))
     builder.row(
-        _btn("🎨 Инфографика", f"gengraphic:{product_id}"),
+        _btn("📈 Выдача", f"seo:{product_id}"),
         _btn("💰 Цена", f"pricecheck:{product_id}"),
     )
     builder.row(
+        _btn("🎨 Инфографика", f"gengraphic:{product_id}"),
         _btn("🧬 Другие модели", f"clone:{product_id}"),
-        _btn("✏️ Править", f"edit:{product_id}"),
     )
+    builder.row(_btn("✏️ Править", f"edit:{product_id}"))
     builder.row(_btn("❌ Отмена", f"cancel:{product_id}"))
     return builder.as_markup()
 
@@ -67,7 +68,8 @@ def product_detail_kb(product_id: int) -> InlineKeyboardMarkup:
     builder.row(_btn("✅ Опубликовать", f"publish:{product_id}"))
     builder.row(_btn("🧬 Клон", f"clone:{product_id}"), _btn("📦 Пакет на модели", f"clonebatch:{product_id}"))
     builder.row(_btn("✏️ Править", f"edit:{product_id}"), _btn("🎨 Инфографика", f"gengraphic:{product_id}"))
-    builder.row(_btn("🖼 Фото", f"processimg:{product_id}"), _btn("🔍 Конкуренты", f"competitors:{product_id}"))
+    builder.row(_btn("📈 Выдача", f"seo:{product_id}"), _btn("🔍 Конкуренты", f"competitors:{product_id}"))
+    builder.row(_btn("🖼 Фото", f"processimg:{product_id}"))
     return builder.as_markup()
 
 
@@ -112,6 +114,20 @@ def drafts_kb(product_ids: list[int]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for product_id in product_ids:
         builder.button(text=f"▶️ Продолжить #{product_id}", callback_data=f"continuedraft:{product_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def seo_actions_kb(product_id: int, suggested_title: str | None, suggested_price: float | None) -> InlineKeyboardMarkup:
+    """Клавиатура под экраном «📈 Выдача» — кнопки правки показываются, только
+    если реально есть что предложить (раздел 3.2 ТЗ v4)."""
+    builder = InlineKeyboardBuilder()
+    if suggested_title:
+        builder.button(text="✍️ Подставить название", callback_data=f"seotitle:{product_id}")
+    if suggested_price is not None:
+        builder.button(text=f"💰 Поставить {suggested_price:.0f}₽", callback_data=f"seoprice:{product_id}:{suggested_price:.2f}")
+    builder.button(text="🎨 Инфографика", callback_data=f"gengraphic:{product_id}")
+    builder.button(text="🔍 Топ выдачи", callback_data=f"competitors:{product_id}")
     builder.adjust(1)
     return builder.as_markup()
 

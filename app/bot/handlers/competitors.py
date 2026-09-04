@@ -8,8 +8,9 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from app.bot import texts
-from app.bot.keyboards import price_suggestion_kb
+from app.bot.keyboards import price_suggestion_kb, seo_actions_kb
 from app.config import settings
+from app.db.models import ProductStatus
 from app.services.competitor_analysis import (
     CompetitorAnalysisError,
     CompetitorReport,
@@ -19,6 +20,7 @@ from app.services.competitor_analysis import (
     suggest_pricing,
 )
 from app.services.pricing_intelligence import PriceTrend, get_shop_price_trend, save_shop_snapshot
+from app.services.seo_coach import SEOReport, build_seo_report, suggested_title_for_product
 
 logger = logging.getLogger(__name__)
 router = Router(name="competitors")
@@ -213,5 +215,115 @@ async def set_price(callback: CallbackQuery, product_service) -> None:
         return
 
     price = float(value)
+    await product_service.update_fields(product_id, price=price)
+    await callback.message.answer(texts.price_set(product_id, price))
+
+
+def _format_seo_report(report: SEOReport) -> str:
+    """Экран «📈 Выдача» (раздел 3.4 ТЗ v4) — вывод и до 5 конкретных действий,
+    не простыня из 20 карточек конкурентов. query — текст, который ввёл
+    пользователь в товар (title/car_model), поэтому экранируем от HTML."""
+    query = html.escape(report.query) if report.query else "—"
+
+    if report.items_count == 0:
+        lines = [f"📈 <b>Выдача по запросу «{query}»</b>"]
+        for action in report.actions:
+            lines.append(f"⚠️ {html.escape(action.text)}")
+        return "\n".join(lines)
+
+    lines = [f"📈 <b>Выдача Wildberries</b> по запросу «{query}» (найдено {report.items_count})"]
+
+    if report.price_rank is not None:
+        vs_median = ""
+        if report.price_vs_median_pct:
+            direction = "дороже" if report.price_vs_median_pct > 0 else "дешевле"
+            vs_median = f" ({direction} медианы на {abs(report.price_vs_median_pct):.0f}%)"
+        lines.append(f"Твоя позиция по цене: {report.price_rank} из {report.items_count + 1}{vs_median}")
+
+    if report.missing_in_our_title:
+        words = ", ".join(html.escape(w) for w in report.missing_in_our_title)
+        lines.append(f"В топе есть слова, которых нет в названии: {words}")
+
+    lines.append(f"Фото в топе обычно 5+, у тебя {report.our_photo_count}")
+
+    if report.typical_top_feedbacks is not None:
+        lines.append(f"Отзывов у топа в среднем {report.typical_top_feedbacks:.0f}")
+
+    if report.actions:
+        lines.append("")
+        lines.append("Что сделать сейчас:")
+        for action in report.actions:
+            lines.append(f"{action.priority}. {html.escape(action.text)}")
+
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("seo:"))
+async def seo_report(callback: CallbackQuery, product_service) -> None:
+    """«📈 Выдача» — раздел 3.2 ТЗ v4: выводы по живой позиции в поиске WB и
+    конкретные правки, а не сырой топ-5 (это остаётся в «🔍 Конкуренты»/`/market`)."""
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer("Смотрю выдачу WB...")
+
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    report = await build_seo_report(product)
+    await callback.message.answer(
+        _format_seo_report(report), reply_markup=seo_actions_kb(product_id, report.suggested_title, report.suggested_price)
+    )
+
+
+@router.callback_query(F.data.startswith("seotitle:"))
+async def seo_apply_title(callback: CallbackQuery, product_service) -> None:
+    product_id = int(callback.data.split(":")[1])
+    await callback.answer()
+
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    suggested = suggested_title_for_product(product)
+    if not suggested:
+        await callback.message.answer("Название уже в нужном формате — предлагать нечего.")
+        return
+
+    await product_service.update_fields(product_id, title=suggested)
+
+    note = "✅ Название в боте обновлено."
+    if product.status in (ProductStatus.PUBLISHED, ProductStatus.PARTIALLY_PUBLISHED):
+        # Раздел 3.3 ТЗ v4: не обещаем то, чего бот пока не умеет — синхрона
+        # названия на уже опубликованную карточку WB/Ozon в этом срезе нет.
+        note += " Чтобы сменить на WB/Ozon — опубликуй ещё раз или поправь в кабинете."
+    await callback.message.answer(note)
+
+    from app.bot.handlers.new_product import render_preview
+
+    preview_text, keyboard = await render_preview(product_service, product_id)
+    await callback.message.answer(preview_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("seoprice:"))
+async def seo_apply_price(callback: CallbackQuery, product_service) -> None:
+    _, product_id_raw, value = callback.data.split(":")
+    product_id = int(product_id_raw)
+    await callback.answer()
+
+    product = await product_service.get_product(product_id)
+    if product is None:
+        await callback.message.answer(texts.NOT_FOUND)
+        return
+
+    price = float(value)
+    cost_price = float(product.cost_price) if product.cost_price else None
+    if cost_price is not None and price < cost_price:
+        # Повторная проверка на случай устаревшего callback_data — предложение
+        # уже не должно было прийти ниже себестоимости (см. seo_coach._suggest_price).
+        await callback.message.answer("Эта цена ниже себестоимости — не ставлю.")
+        return
+
     await product_service.update_fields(product_id, price=price)
     await callback.message.answer(texts.price_set(product_id, price))

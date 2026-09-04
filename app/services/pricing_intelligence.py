@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from statistics import mean
@@ -277,7 +278,7 @@ def format_trend_digest(alerts: list[TrendAlert]) -> str:
     for alert in alerts:
         arrow = "📈" if alert.trend.direction == "up" else "📉"
         lines.append(
-            f"{arrow} {alert.label}: {alert.trend.first_avg_price:.0f}₽ → "
+            f"{arrow} {html.escape(alert.label)}: {alert.trend.first_avg_price:.0f}₽ → "
             f"{alert.trend.last_avg_price:.0f}₽ ({alert.trend.change_pct:+.1f}%)"
         )
     lines.append("\nПодробности и рекомендации — /analytics <ID товара> в боте.")
