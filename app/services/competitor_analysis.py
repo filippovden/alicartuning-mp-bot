@@ -13,15 +13,22 @@ API не даёт доступа к чужим карточкам. `search_ozon_
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 WB_SEARCH_URL = "https://search.wb.ru/exactmatch/ru/common/v9/search"
 WB_SELLER_CATALOG_URL = "https://catalog.wb.ru/sellers/catalog"
 WB_SELLER_LINK_RE = re.compile(r"seller/(\d+)")
+
+WB_MAX_RETRIES = 3
+WB_RETRY_BASE_DELAY = 1.0
 
 STOPWORDS = {"для", "с", "и", "на", "в", "от", "по", "к", "из", "или", "не", "без", "под"}
 
@@ -42,6 +49,37 @@ WB_BROWSER_HEADERS = {
 
 class CompetitorAnalysisError(Exception):
     pass
+
+
+async def _get_json_with_retry(client: httpx.AsyncClient, url: str, params: dict) -> dict:
+    """GET с retry на 429 (экспоненциальный backoff, уважает Retry-After) —
+    те же правила, что и у официальных клиентов WB/Ozon
+    (см. BaseMarketplaceClient._retry_delay), но этот публичный неофициальный
+    API витрины идёт через свой httpx.AsyncClient, а не через тот базовый
+    класс, и раньше падал с первого же 429 без единой попытки повтора."""
+    response: httpx.Response | None = None
+    for attempt in range(WB_MAX_RETRIES + 1):
+        response = await client.get(url, params=params)
+        if response.status_code == 429 and attempt < WB_MAX_RETRIES:
+            delay = _wb_retry_delay(response, attempt)
+            logger.warning("429 от %s, повтор через %.1fс (попытка %d/%d)", url, delay, attempt + 1, WB_MAX_RETRIES)
+            await asyncio.sleep(delay)
+            continue
+        response.raise_for_status()
+        return response.json()
+
+    # Не должно достигаться (цикл либо возвращает, либо кидает исключение выше).
+    raise CompetitorAnalysisError(f"Превышено число повторов при 429 для {url}")
+
+
+def _wb_retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return WB_RETRY_BASE_DELAY * (2**attempt)
 
 
 @dataclass
@@ -113,9 +151,7 @@ async def search_wb_competitors(query: str, limit: int = 20, exclude_brand: str 
     }
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=WB_BROWSER_HEADERS) as client:
-            response = await client.get(WB_SEARCH_URL, params=params)
-            response.raise_for_status()
-            payload = response.json()
+            payload = await _get_json_with_retry(client, WB_SEARCH_URL, params)
     except httpx.HTTPError as exc:
         raise CompetitorAnalysisError(f"Не удалось получить данные поиска WB: {exc}") from exc
 
@@ -167,9 +203,7 @@ async def fetch_wb_shop(seller_id: str, max_pages: int = 3, limit: int = 100) ->
         async with httpx.AsyncClient(timeout=15.0, headers=WB_BROWSER_HEADERS) as client:
             for page in range(1, max_pages + 1):
                 params = {"dest": -1257786, "supplier": seller_id, "curr": "rub", "spp": 30, "page": page}
-                response = await client.get(WB_SELLER_CATALOG_URL, params=params)
-                response.raise_for_status()
-                payload = response.json()
+                payload = await _get_json_with_retry(client, WB_SELLER_CATALOG_URL, params)
                 products = payload.get("data", {}).get("products", [])
                 if not products:
                     break

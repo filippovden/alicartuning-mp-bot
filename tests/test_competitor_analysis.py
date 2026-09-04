@@ -68,6 +68,63 @@ async def test_fetch_wb_shop_sends_browser_like_headers():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_search_wb_competitors_retries_on_429_then_succeeds(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("app.services.competitor_analysis.asyncio.sleep", fake_sleep)
+
+    route = respx.get(WB_SEARCH_URL)
+    route.side_effect = [
+        httpx.Response(429, headers={"Retry-After": "2"}),
+        httpx.Response(200, json={"data": {"products": [{"name": "x", "salePriceU": 100000}]}}),
+    ]
+
+    report = await search_wb_competitors("что-то")
+
+    assert len(report.items) == 1
+    assert sleeps == [2.0]  # уважает Retry-After
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_wb_competitors_exhausts_retries_and_raises(monkeypatch):
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("app.services.competitor_analysis.asyncio.sleep", fake_sleep)
+    route = respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(429))
+
+    with pytest.raises(CompetitorAnalysisError):
+        await search_wb_competitors("что-то")
+
+    assert route.call_count == 4  # 1 попытка + 3 повтора
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_wb_shop_retries_on_429_then_succeeds(monkeypatch):
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("app.services.competitor_analysis.asyncio.sleep", fake_sleep)
+
+    route = respx.get(WB_SELLER_CATALOG_URL)
+    route.side_effect = [
+        httpx.Response(429),
+        httpx.Response(200, json={"data": {"products": [{"name": "x", "salePriceU": 100000}]}}),
+        httpx.Response(200, json={"data": {"products": []}}),
+    ]
+
+    report = await fetch_wb_shop("12345", max_pages=5)
+
+    assert len(report.items) == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_search_wb_competitors_network_error_raises():
     respx.get(WB_SEARCH_URL).mock(return_value=httpx.Response(500))
     with pytest.raises(CompetitorAnalysisError):
