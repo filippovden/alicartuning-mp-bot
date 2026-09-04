@@ -9,13 +9,17 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0005"
 down_revision: Union[str, None] = "0004"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-marketplace = sa.Enum("wildberries", "ozon", name="marketplace")
+# create_type=False обязательно через postgresql.ENUM (не sa.Enum — теряет флаг
+# при адаптации к dialect_impl). Тип marketplace уже создан миграцией
+# 0001_initial.py — см. подробное объяснение в 0006_shop_listings.py.
+marketplace = postgresql.ENUM("wildberries", "ozon", name="marketplace", create_type=False)
 
 
 def upgrade() -> None:

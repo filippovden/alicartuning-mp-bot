@@ -9,13 +9,21 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0002"
 down_revision: Union[str, None] = "0001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-marketplace = sa.Enum("wildberries", "ozon", name="marketplace")
+# create_type=False обязательно через postgresql.ENUM (не sa.Enum — теряет флаг
+# при адаптации к dialect_impl, см. подробности в 0006_shop_listings.py). Тип
+# marketplace уже создан миграцией 0001_initial.py — без этого флага
+# op.create_table ниже сам пытается выполнить CREATE TYPE marketplace ещё раз и
+# падает с "type marketplace already exists", если эта миграция применяется
+# отдельным процессом (не подряд с 0001 в одном alembic upgrade), например при
+# рестарте контейнера на уже частично мигрированной базе.
+marketplace = postgresql.ENUM("wildberries", "ozon", name="marketplace", create_type=False)
 review_sentiment = sa.Enum("positive", "neutral", "negative", name="reviewsentiment")
 
 

@@ -9,14 +9,26 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0006"
 down_revision: Union[str, None] = "0005"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-marketplace = sa.Enum("wildberries", "ozon", name="marketplace")
-listing_status = sa.Enum("draft", "published", "partial", "error", name="listingstatus")
+# create_type=False обязательно через postgresql.ENUM, а не через sa.Enum:
+# generic sa.Enum теряет флаг create_type при внутренней адаптации к
+# dialect_impl (см. TypeEngine.dialect_impl в sqlalchemy/sql/sqltypes.py) —
+# op.create_table ниже всё равно бы попытался сам выполнить CREATE TYPE.
+# marketplace уже создан миграцией 0001_initial.py (category_attrs.marketplace/
+# publish_logs.marketplace) — без create_type=False падает с "type marketplace
+# already exists" на любой базе, где 0001 уже применена отдельным процессом от
+# 0006 (например, рестарт контейнера на частично мигрированной базе — 0006 не
+# бывает первой миграцией). listing_status создаётся явно ниже (checkfirst=True,
+# он новый в этой миграции), create_type=False здесь не даёт op.create_table
+# попытаться создать его ЕЩЁ раз при определении колонки status.
+marketplace = postgresql.ENUM("wildberries", "ozon", name="marketplace", create_type=False)
+listing_status = postgresql.ENUM("draft", "published", "partial", "error", name="listingstatus", create_type=False)
 
 
 def upgrade() -> None:
