@@ -21,6 +21,7 @@ from app.bot.keyboards import (
     shop_picker_kb,
     skip_kb,
 )
+from app.bot.progress import set_progress, start_progress
 from app.bot.states import NewProductStates, ShopPickStates
 from app.config import settings
 from app.db.models import ListingStatus, Marketplace
@@ -578,12 +579,19 @@ async def confirm_publish(callback: CallbackQuery, state: FSMContext, product_se
     ozon_shops = shops_service.list_shops(platform=Marketplace.OZON)
 
     if len(wb_shops) <= 1 and len(ozon_shops) <= 1:
-        await callback.message.answer(texts.PUBLISHING)
+        # Раздел 2.B ТЗ v8: одна полоска-сообщение вместо голого «⏳ Публикую...».
+        # Инфографику в publish() не зовём (см. product_service.publish) —
+        # поэтому шага «Картинка» из таблицы ТЗ здесь нет, только 15/70/100.
+        handle = await start_progress(callback.message.answer, "Публикую карточку")
+        await set_progress(handle, 15, "Готовлю выкладку")
+        await set_progress(handle, 70, "Отправляю на площадки")
         try:
             summary = await product_service.publish(product_id)
         except ValueError as exc:
+            await set_progress(handle, 100, "Не получилось")
             await callback.message.answer(f"⚠️ {exc}")
             return
+        await set_progress(handle, 100, "Готово")
         await callback.message.answer(texts.publish_result(summary.wb, summary.ozon))
         await state.clear()
         return
@@ -688,6 +696,14 @@ async def shop_confirm_publish(callback: CallbackQuery, state: FSMContext, produ
     selected = data.get("shoppick_selected", [])
     await state.clear()
 
+    # Раздел 2.B ТЗ v8: «и после выбора магазинов, когда публикация реально
+    # пошла» — та же полоска 15/70/100, что и в confirm_publish, вокруг всего
+    # цикла по магазинам (без деления на проценты по магазинам — детальный
+    # итог всё равно приходит следующим сообщением, построчно по магазинам).
+    handle = await start_progress(callback.message.answer, "Публикую карточку")
+    await set_progress(handle, 15, "Готовлю выкладку")
+    await set_progress(handle, 70, "Отправляю на площадки")
+
     lines: list[str] = []
     for shop_id in selected:
         shop = shops_service.get_shop(shop_id)
@@ -715,9 +731,11 @@ async def shop_confirm_publish(callback: CallbackQuery, state: FSMContext, produ
             lines.append(texts.shop_publish_line(shop.name, f"не выложилось — {listing.publish_message or 'ошибка'}"))
 
     if not lines:
+        await set_progress(handle, 100, "Не получилось")
         await callback.message.answer(texts.NEED_AT_LEAST_ONE_SHOP)
         return
 
+    await set_progress(handle, 100, "Готово")
     await callback.message.answer("\n".join(f"• {line}" for line in lines))
 
 

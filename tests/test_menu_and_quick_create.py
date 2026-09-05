@@ -31,6 +31,8 @@ class _FakeMessage:
         self.answered: list[str] = []
         self.answered_markups: list[object] = []
         self.edited_markups: list[object] = []
+        self.edited: list[str] = []
+        self.edited_kb: list[object] = []
 
     async def answer(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
         self.answered.append(text)
@@ -39,6 +41,11 @@ class _FakeMessage:
 
     async def edit_reply_markup(self, reply_markup=None, **kwargs) -> "_FakeMessage":
         self.edited_markups.append(reply_markup)
+        return self
+
+    async def edit_text(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
+        self.edited.append(text)
+        self.edited_kb.append(reply_markup)
         return self
 
 
@@ -334,7 +341,8 @@ async def test_quick_description_parse_failure_asks_to_retry(session):
     message = _FakeMessage("что-то нечленораздельное")
     await quick_create.quick_description(message, state, service, session)
 
-    assert message.answered[-1] == texts.QUICK_PARSE_FAILED
+    # Раздел 2.A ТЗ v8: ошибка правит ту же полоску-сообщение (edit_text).
+    assert message.edited[-1] == "⚠️ Не получилось разобрать описание."
     # Состояние не продвинулось — можно ввести описание ещё раз.
     assert await state.get_state() == "QuickCreateStates:description"
 

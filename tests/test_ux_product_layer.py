@@ -33,10 +33,17 @@ class _FakeMessage:
         self.from_user = user or _FakeUser(1)
         self.answered: list[str] = []
         self.answered_kb: list[object] = []
+        self.edited: list[str] = []
+        self.edited_kb: list[object] = []
 
     async def answer(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
         self.answered.append(text)
         self.answered_kb.append(reply_markup)
+        return self
+
+    async def edit_text(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
+        self.edited.append(text)
+        self.edited_kb.append(reply_markup)
         return self
 
 
@@ -392,8 +399,10 @@ async def test_quick_parse_failure_offers_retry_and_fallback_buttons(session):
     message = _FakeMessage("нечленораздельное", user=_FakeUser(140))
     await quick_create.quick_description(message, state, service, session)
 
-    assert message.answered[-1] == texts.QUICK_PARSE_FAILED
-    kb = message.answered_kb[-1]
+    # Раздел 2.A ТЗ v8: ошибка правит ту же полоску-сообщение (edit_text), а не
+    # шлёт новое — см. app/bot/progress.py:fail_progress.
+    assert message.edited[-1] == "⚠️ Не получилось разобрать описание."
+    kb = message.edited_kb[-1]
     all_callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
     assert "quickretry" in all_callbacks
     assert "quickfallbackstep" in all_callbacks

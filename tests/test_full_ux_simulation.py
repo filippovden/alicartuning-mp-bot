@@ -63,6 +63,7 @@ class _FakeMessage:
         self.from_user = user or _FakeUser(1)
         self.answered: list[str] = []
         self.answered_photos: list[tuple[object, str | None]] = []
+        self.edited: list[str] = []
 
     async def answer(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
         self.answered.append(text)
@@ -70,6 +71,10 @@ class _FakeMessage:
 
     async def answer_photo(self, photo, caption: str | None = None, **kwargs) -> "_FakeMessage":
         self.answered_photos.append((photo, caption))
+        return self
+
+    async def edit_text(self, text: str, reply_markup=None, **kwargs) -> "_FakeMessage":
+        self.edited.append(text)
         return self
 
 
@@ -372,7 +377,8 @@ async def test_B2_quick_create_parse_failure_retries(session):
 
             msg = _FakeMessage("бессвязный текст", user=user)
             await quick_create.quick_description(msg, state, service, session)
-            assert msg.answered[-1] == texts.QUICK_PARSE_FAILED
+            # Раздел 2.A ТЗ v8: ошибка правит полоску-сообщение (edit_text), не шлёт новое.
+            assert msg.edited[-1] == "⚠️ Не получилось разобрать описание."
             assert await state.get_state() == "QuickCreateStates:description"
         except Exception as exc:  # noqa: BLE001
             failures.append(f"#{i}: {type(exc).__name__}: {exc}")

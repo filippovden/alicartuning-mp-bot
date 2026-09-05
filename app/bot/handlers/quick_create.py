@@ -23,6 +23,7 @@ from app.bot.handlers.new_product import (
     try_generate_ai_content,
 )
 from app.bot.keyboards import quick_parse_failed_kb
+from app.bot.progress import fail_progress, set_progress, start_progress
 from app.bot.states import QuickCreateStates
 from app.config import settings
 from app.services.ai.client import AIContentGenerationError
@@ -124,15 +125,18 @@ async def quick_fallback_to_step(callback: CallbackQuery, state: FSMContext, pro
 
 @router.message(QuickCreateStates.description)
 async def quick_description(message: Message, state: FSMContext, product_service, session) -> None:
+    """Раздел 2.A ТЗ v8: одна полоска-сообщение вместо пачки отдельных
+    «Разбираю...»/«Генерирую...» — редактируется по мере реальных шагов
+    (разбор → категория → текст), а не поддельной анимацией."""
     data = await state.get_data()
     product_id = data["product_id"]
-    await message.answer(texts.QUICK_PARSING)
+    handle = await start_progress(message.answer, step="Разбираю описание")
 
     try:
         parsed = await product_service.ai_service.parse_quick_description(message.text.strip())
     except AIContentGenerationError:
         logger.warning("Не удалось разобрать быстрое описание товара %s", product_id, exc_info=True)
-        await message.answer(texts.QUICK_PARSE_FAILED, reply_markup=quick_parse_failed_kb())
+        await fail_progress(handle, "Не получилось разобрать описание.", reply_markup=quick_parse_failed_kb())
         return
 
     fields = {}
@@ -161,6 +165,7 @@ async def quick_description(message: Message, state: FSMContext, product_service
 
     if fields:
         await product_service.update_fields(product_id, **fields)
+    await set_progress(handle, 10, "Сохранил данные")
 
     category_query = draft_title or fields.get("material") or ""
     if category_query:
@@ -168,23 +173,24 @@ async def quick_description(message: Message, state: FSMContext, product_service
             await _auto_pick_category(session, product_service, product_id, category_query)
         except MarketplaceAPIError as exc:
             logger.warning("Не удалось автоподобрать категорию для товара %s: %s", product_id, exc)
+    await set_progress(handle, 35, "Категория")
 
-    await message.answer(texts.generating_preview())
+    await set_progress(handle, 55, "Пишу название и текст")
     try:
         await product_service.generate_ai_content(product_id)
     except Exception:
         # Раздел H.6 ТЗ: держим состояние в description, а не переключаем на
         # общий «Повторить» — так те же кнопки («Написать заново»/«Пошагово»)
         # остаются рабочими и не оставляют диалог в непонятном промежуточном шаге.
+        # Раздел 2.A ТЗ v8: правим полоску на текст ошибки, не оставляем на 55%.
         logger.warning("Не удалось сгенерировать текст для товара %s", product_id, exc_info=True)
-        await message.answer(
-            "⚠️ Не получилось сгенерировать текст карточки — AI недоступен.",
-            reply_markup=quick_parse_failed_kb(),
-        )
+        await fail_progress(handle, "Не получилось собрать текст.", reply_markup=quick_parse_failed_kb())
         return
+    await set_progress(handle, 80, "Текст готов")
 
     await state.update_data(need_dimensions=not dims_present, need_weight=not bool(weight))
     await state.set_state(QuickCreateStates.vendor_code)
+    await set_progress(handle, 100, "Карточка готова")
     product = await product_service.get_product(product_id)
     await message.answer(texts.quick_ask_vendor_code(product.car_model or "—"))
 
